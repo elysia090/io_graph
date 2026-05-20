@@ -8,6 +8,8 @@ Primary Goal: Preserve compact cyclic graph artifacts as kernel/BPF-side runtime
 Primary v0 Workload: High-cardinality pre-ringbuf filtering
 Primary Non-Goal: Do not build a general regex engine, a general parser VM, or a new standalone kernel subsystem
 
+⸻
+
 1. Summary
 
 io_graph is a BPF-side runtime artifact for compact cyclic finite-state graphs.
@@ -39,6 +41,8 @@ The core idea is not that FSM compression is new. It is not.
 
 The core idea is that, when the final decision only needs a small invariant over a compact cyclic graph, the graph itself should become the runtime object.
 
+⸻
+
 2. Production Problem
 
 The first production-shaped target is pre-ringbuf filtering for high-volume observability and security agents.
@@ -48,6 +52,8 @@ Falco users have requested conditional kernel-side event filtering because highl
 Tetragon already exposes per-hook in-kernel BPF selectors and actions. Its high-load performance discussion points to two options when ring buffers overflow: produce fewer events or optimize userspace consumption. The first option is the space targeted by io_graph.  ￼
 
 Therefore v0 uses pre-ringbuf high-cardinality path/prefix filtering as the first benchmark workload.
+
+⸻
 
 3. Core Thesis
 
@@ -76,6 +82,8 @@ userspace rule-evaluation context
 mutable pointer tree
 
 The project succeeds only if preserving the cyclic form at runtime gives a measurable benefit over flattening.
+
+⸻
 
 4. IO-aware Execution Principle
 
@@ -109,6 +117,8 @@ execution order:
 why cyclic graph:
   shared prefixes, shared continuations, default paths, and self-loop scanner
   states remain compact and executable
+
+⸻
 
 5. What io_graph Is Not
 
@@ -145,6 +155,8 @@ v0 explicitly excludes:
 * certificate model,
 * path canonicalization.
 
+⸻
+
 6. Why This Is Not Just DFA Compression
 
 DFA compression is a mature area. Dense tables, sparse tables, default transitions, byte classes, minimization, and acceleration are all well-known.
@@ -171,6 +183,10 @@ event parameters
   -> drop
 
 io_graph attempts to move the small decision before those objects are built.
+
+Dense DFA implementations optimize the table shape, but they still materialize a transition table. regex-automata documents the dense DFA size as #states * 256 * sizeof(StateID), reduced by byte classes to #states * k * sizeof(StateID) where k is the number of equivalence classes. io_graph targets cases where even that table is not the object that should exist in the kernel hot path.  ￼
+
+⸻
 
 7. Winning Conditions
 
@@ -203,6 +219,15 @@ rcu_assign_pointer()
 call_rcu(old, free)
 
 No BPF program reload should be necessary for a pure graph update.
+
+Important distinction:
+
+policy activation:
+  new graph becomes visible after pointer publication
+old graph reclamation:
+  deferred until an RCU grace period completes
+
+RCU grace period latency is not counted as policy activation latency.
 
 7.3 Pre-ringbuf I/O reduction
 
@@ -241,6 +266,8 @@ Run path must be:
 * per-CPU scratch-free,
 * helper-free inside graph execution.
 
+⸻
+
 8. Failure Conditions
 
 The hypothesis fails if:
@@ -262,6 +289,8 @@ userspace compiler/minimizer
 
 not a kernel runtime artifact.
 
+⸻
+
 9. Path Canonicalization
 
 io_graph operates on the raw byte sequence supplied by the caller.
@@ -282,6 +311,8 @@ For enforcement-sensitive use cases, callers must combine io_graph with proper o
 This limitation is shared with kernel-side BPF path filters in general. It is not unique to io_graph.
 
 v0 benchmarks should use raw path arguments first. Resolved path semantics are a later integration problem.
+
+⸻
 
 10. v0 Scope
 
@@ -319,11 +350,104 @@ high-cardinality exact/prefix path filtering before ringbuf emission
 
 Suffix, contains, captures, and streaming/resumable state are v0.5 or later.
 
-11. Target Workloads
+⸻
+
+11. Expected Performance Envelope
+
+These are v0 engineering targets, not ABI guarantees.
+
+11.1 Run-path cost
+
+For small cache-resident prefix graphs:
+
+fixed kfunc/run overhead:
+  target 50–150 ns
+interpreted byte processing:
+  target 1–3 ns/byte for L1-resident graph walks
+typical 100-byte path:
+  target 150–500 ns/event
+large graph / L2-resident / branchy path:
+  acceptable 500 ns–2 µs/event envelope
+self-loop JIT hot path:
+  target 50–200 ns/event for scanner-like workloads
+
+The target is not to beat every dense DFA transition table.
+
+The target is to beat the full cost of event materialization, ringbuf emission, userspace delivery, and userspace rule evaluation when the event can be rejected early.
+
+11.2 Memory footprint
+
+For high-cardinality path/prefix policies:
+
+100 prefixes, average 50 bytes:
+  target 15–70 KiB graph blob
+1000 prefixes, average 50 bytes:
+  target 150–700 KiB graph blob
+hard v0 graph blob cap:
+  8 MiB
+
+The goal is for common 100-prefix policies to fit in L1/L2 cache and for 1000-prefix policies to remain L2-resident on typical systems.
+
+11.3 Update cost
+
+Graph updates should avoid BPF program regeneration, verifier reprocessing, JIT recompilation, and attach-time churn.
+
+Activation path:
+
+copy blob
+verify blob
+build immutable object
+publish with rcu_assign_pointer()
+
+Old graph reclamation is deferred to an RCU grace period and is not counted as policy activation latency.
+
+Expected update advantage over BPF program reload:
+
+small/medium graph:
+  10x–1000x lower activation cost depending on baseline
+
+11.4 Compared baselines
+
+The v0 target should be in the same order of magnitude as existing BPF map lookups for supported workloads, while solving a class of string/prefix matching that LPM_TRIE does not naturally solve.
+
+Expected comparison:
+
+BPF LPM_TRIE:
+  good precedent for map-backed lookup object
+  IP/binary prefix-oriented
+  pointer-linked traversal
+io_graph:
+  string/prefix byte-sequence graph
+  contiguous index-based traversal
+  map-backed policy object
+
+11.5 Expected wins
+
+Minimum expected win:
+
+100+ prefixes:
+  BPF program instruction count remains nearly constant
+negative-heavy event stream:
+  ringbuf bytes reduced by 2x+
+policy update:
+  no BPF program reload for graph-only changes
+
+Strong expected win:
+
+100+ prefixes:
+  10x+ smaller than generated BPF or dense table baseline
+high-drop workload:
+  10x–100x ringbuf I/O reduction
+self-loop scanner:
+  1.5x–3x faster than hand-written BPF loop
+
+⸻
+
+12. Target Workloads
 
 v0 targets four workload families.
 
-11.1 Falco-style pre-ringbuf path filter
+12.1 Falco-style pre-ringbuf path filter
 
 Examples:
 
@@ -351,7 +475,7 @@ Win metric:
 * userspace CPU avoided,
 * total drop rate improvement.
 
-11.2 Tetragon-style large-N selector
+12.2 Tetragon-style large-N selector
 
 Tetragon already models selectors as in-kernel BPF filters and actions. Each selector contains filters, filters are combined with AND semantics, and multiple selectors are evaluated as first-match OR. Tetragon documentation describes bounded selector structure and value limits for some filters.  ￼
 
@@ -381,7 +505,7 @@ Win metric:
 * action latency,
 * update latency.
 
-11.3 Self-loop scanner
+12.3 Self-loop scanner
 
 Examples:
 
@@ -409,7 +533,7 @@ Win metric:
 * JIT image size,
 * throughput vs BPF FSM.
 
-11.4 Sparse FSM classifier
+12.4 Sparse FSM classifier
 
 Examples:
 
@@ -438,20 +562,24 @@ Win metric:
 * update latency,
 * BPF verifier/JIT reload avoided.
 
-12. Relationship to Existing Kernel/BPF Code
+⸻
 
-12.1 LPM_TRIE precedent
+13. Relationship to Existing Kernel/BPF Code
+
+13.1 LPM_TRIE precedent
 
 BPF_MAP_TYPE_LPM_TRIE is a useful precedent: a BPF map type containing a kernel-side data structure with custom allocation, lookup, update, delete, BTF checking, and memory accounting.
 
-io_graph should follow this shape:
+The implementation embeds struct bpf_map and uses RCU child pointers in a trie-shaped internal object.  ￼
+
+io_graph should follow the same general map-object shape:
 
 BPF map type
 custom map_alloc/free/update
 custom memory accounting
 BPF-callable step/run interface
 
-12.2 Difference from LPM_TRIE
+13.2 Difference from LPM_TRIE
 
 LPM_TRIE lookup traverses pointer-linked trie nodes using RCU child pointers.
 
@@ -466,9 +594,11 @@ io_graph:
 
 The hot path should be contiguous index-based graph walking.
 
-12.3 Ringbuf precedent
+13.3 Ringbuf precedent
 
 BPF ringbuf is also a map-shaped kernel object, but it behaves more like a specialized container object than a normal key/value map.
+
+In current kernel code, ringbuf map lookup/update/delete/get_next_key return -ENOTSUPP, while behavior is exposed through specialized operations.  ￼
 
 io_graph should do the same if normal key/value semantics do not fit.
 
@@ -481,13 +611,48 @@ map_delete_elem:
 get_next_key:
   unsupported
 
-12.4 Ringbuf is not the target
+13.4 Ringbuf is not the target
 
-BPF ringbuf is an output transport.
+BPF ringbuf is an output transport. It has pages, producer/consumer positions, wait queues, irq work, and synchronization structures.
 
 io_graph reduces what needs to be materialized before output.
 
-13. Userspace Compiler / Oracle Boundary
+⸻
+
+14. Relationship to Regex Engines
+
+io_graph is not trying to beat Hyperscan.
+
+Hyperscan is broader and more powerful. Its scratch object contains queues, active queue arrays, block/transient/full state, delay slots, anchored literal logs, SOM storage, deduper logs, and callback context.
+
+io_graph wins only by rejecting that expressiveness.
+
+The intended v0 run state is:
+
+state
+cursor
+action
+
+No captures.
+No SOM.
+No match callback.
+No queue.
+No scratch region.
+No per-call allocation.
+
+The first competitor is not Hyperscan.
+
+The first competitors are:
+
+* ringbuf-then-userspace-drop,
+* generated BPF string-compare chains,
+* bounded selector arrays,
+* exact-match maps used as a workaround,
+* dense tables for workloads where sparse cyclic form is smaller.
+
+⸻
+
+15. Userspace Compiler / Oracle Boundary
 
 The userspace toolchain that produces graph blobs is out of scope for the kernel ABI.
 
@@ -520,7 +685,9 @@ The kernel does not verify:
 * source policy correctness,
 * producer correctness.
 
-14. Graph Blob Format
+⸻
+
+16. Graph Blob Format
 
 The v0 blob is a compact cyclic FSM.
 
@@ -565,7 +732,7 @@ struct iog_accept {
     __u32 code;
 };
 
-14.1 Design notes
+16.1 Design notes
 
 iog_node is intentionally small.
 
@@ -584,11 +751,13 @@ sym_lo..sym_hi -> dst
 
 This supports byte ranges, character classes, and scanner-like states without expanding to 256 entries.
 
-15. Verifier
+⸻
+
+17. Verifier
 
 The v0 verifier checks well-formedness and safety only.
 
-15.1 Header checks
+17.1 Header checks
 
 * magic valid,
 * version supported,
@@ -598,7 +767,7 @@ The v0 verifier checks well-formedness and safety only.
 * reserved fields are zero,
 * flags known.
 
-15.2 Limit checks
+17.2 Limit checks
 
 * node_cnt <= max_nodes,
 * edge_cnt <= max_edges,
@@ -607,20 +776,20 @@ The v0 verifier checks well-formedness and safety only.
 * alphabet_size <= max_alphabet,
 * max_input_len <= max_input_len_limit.
 
-15.3 Node checks
+17.3 Node checks
 
 * edge_start + edge_cnt <= total edge count,
 * default_dst == IOG_NO_STATE or default_dst < node_cnt,
 * accept_id == 0 or accept_id < accept_cnt,
 * flags known.
 
-15.4 Edge checks
+17.4 Edge checks
 
 * sym_lo <= sym_hi,
 * sym_hi < alphabet_size,
 * dst < node_cnt.
 
-15.5 Per-node edge ordering
+17.5 Per-node edge ordering
 
 For every node:
 
@@ -629,12 +798,12 @@ For every node:
 
 This lets runtime avoid overlap handling.
 
-15.6 Entry checks
+17.6 Entry checks
 
 * entry state < node_cnt,
 * initial_state < node_cnt.
 
-15.7 Default chain checks
+17.7 Default chain checks
 
 Default transitions are allowed, but bounded.
 
@@ -645,7 +814,7 @@ Suggested v0 value:
 
 IOG_MAX_DEFAULT_DEPTH = 8
 
-15.8 What verifier does not check
+17.8 What verifier does not check
 
 The verifier does not check:
 
@@ -655,9 +824,11 @@ The verifier does not check:
 * compiler correctness,
 * oracle correctness.
 
-16. Runtime Semantics
+⸻
 
-16.1 Step
+18. Runtime Semantics
+
+18.1 Step
 
 Given:
 
@@ -681,7 +852,7 @@ return IOG_NO_STATE
 
 The implementation may binary-search, linear-scan, or JIT depending on edge count and node shape.
 
-16.2 Run
+18.2 Run
 
 run() repeatedly applies step() over an input buffer.
 
@@ -699,17 +870,19 @@ status
 
 v0 does not produce captures or variable-sized match lists.
 
-17. BPF API
+⸻
+
+19. BPF API
 
 v0 uses experimental kfuncs.
 
-17.1 Step kfunc
+19.1 Step kfunc
 
 __bpf_kfunc __u32 bpf_iograph_step(struct bpf_map *map,
                                    __u32 state,
                                    __u32 sym);
 
-17.2 Run kfunc
+19.2 Run kfunc
 
 __bpf_kfunc int bpf_iograph_run(struct bpf_map *map,
                                 const __u8 *buf,
@@ -718,7 +891,7 @@ __bpf_kfunc int bpf_iograph_run(struct bpf_map *map,
                                 __u32 *final_state,
                                 __u32 *action_code);
 
-17.3 Step vs run
+19.3 Step vs run
 
 step() exists for integration and control.
 
@@ -733,7 +906,9 @@ run:
   enables self-loop JIT
   benchmark target
 
-18. Action Model
+⸻
+
+20. Action Model
 
 v0 returns an action code.
 
@@ -763,7 +938,9 @@ allow-list:
   default action = DROP
   matching allowed prefix -> POST
 
-19. Map Type Shape
+⸻
+
+21. Map Type Shape
 
 struct bpf_iograph_map {
     struct bpf_map map;
@@ -771,7 +948,7 @@ struct bpf_iograph_map {
     struct mutex update_lock;
 };
 
-19.1 Map create
+21.1 Map create
 
 Suggested constraints:
 
@@ -781,7 +958,7 @@ value_size = maximum blob size, or fixed upper bound
 
 v0 accepts only key 0.
 
-19.2 Map update
+21.2 Map update
 
 BPF_MAP_UPDATE_ELEM(key=0, value=blob)
 
@@ -796,7 +973,7 @@ swap graph pointer with rcu_assign_pointer()
 unlock
 call_rcu(old_graph, free)
 
-19.3 Map lookup
+21.3 Map lookup
 
 v0 may return -ENOTSUPP.
 
@@ -804,7 +981,7 @@ Alternative:
 
 lookup key 0 returns metadata only
 
-19.4 Map delete
+21.4 Map delete
 
 v0 may either:
 
@@ -814,7 +991,7 @@ or:
 
 return -ENOTSUPP
 
-19.5 Memory accounting
+21.5 Memory accounting
 
 map_mem_usage must include:
 
@@ -826,7 +1003,9 @@ map_mem_usage must include:
 * accepts,
 * JIT image.
 
-20. In-kernel Graph Object
+⸻
+
+22. In-kernel Graph Object
 
 The kernel may normalize the blob into an immutable object.
 
@@ -863,7 +1042,9 @@ FPU
 per-CPU scratch allocation
 helper call from graph execution
 
-21. Concurrency and Update Model
+⸻
+
+23. Concurrency and Update Model
 
 Graph object is immutable after publication.
 
@@ -877,25 +1058,27 @@ This avoids incremental mutation complexity.
 
 Compared with pointer-linked data structures that mutate subtrees, io_graph uses coarser but simpler whole-graph replacement.
 
-22. JIT v0
+⸻
+
+24. JIT v0
 
 v0 JIT is not a general graph JIT.
 
 It supports only structures needed to test the thesis.
 
-22.1 Required lowering
+24.1 Required lowering
 
 single-state self-loop SCC -> tight loop
 sparse outgoing edges -> cmp chain
 accept/reject return
 
-22.2 Optional lowering
+24.2 Optional lowering
 
 dense outgoing edges -> jump table
 
 This may be v0.5 if code size grows.
 
-22.3 Self-loop target
+24.3 Self-loop target
 
 Pattern:
 
@@ -914,7 +1097,7 @@ while cursor < end:
 
 This is the primary v0 JIT performance claim.
 
-22.4 JIT lifetime
+24.4 JIT lifetime
 
 JIT image lifetime is tied to struct iog_graph.
 
@@ -926,7 +1109,9 @@ old graph:
   call_rcu
   free JIT image after grace period
 
-23. Interpreter
+⸻
+
+25. Interpreter
 
 Interpreter is required.
 
@@ -945,7 +1130,9 @@ The interpreter must produce the same trace as the JIT for:
 * final state,
 * status.
 
-24. Differential Testing
+⸻
+
+26. Differential Testing
 
 Every JIT-supported graph must be tested against the interpreter.
 
@@ -964,18 +1151,20 @@ Required property:
 
 interpreter_trace == jit_trace
 
-25. Security Model
+⸻
+
+27. Security Model
 
 v0 keeps the attack surface small by design.
 
-25.1 Trusted
+27.1 Trusted
 
 * kernel verifier,
 * kernel interpreter,
 * kernel JIT after verification,
 * RCU lifetime rules.
 
-25.2 Untrusted
+27.2 Untrusted
 
 * userspace graph blob,
 * graph producer,
@@ -983,7 +1172,7 @@ v0 keeps the attack surface small by design.
 * minimality claims,
 * BPF program inputs.
 
-25.3 Run path restrictions
+27.3 Run path restrictions
 
 * no dynamic allocation,
 * no sleeping,
@@ -994,9 +1183,11 @@ v0 keeps the attack surface small by design.
 * no capture buffers,
 * no path canonicalization.
 
-26. Benchmarks
+⸻
 
-26.1 Baselines
+28. Benchmarks
+
+28.1 Baselines
 
 A. hand-written C FSM
 Upper bound.
@@ -1024,7 +1215,7 @@ Target.
 
 If a regex-kfunc baseline is available and reproducible, include it separately.
 
-26.2 Required metrics
+28.2 Required metrics
 
 * artifact bytes,
 * flat table bytes,
@@ -1046,7 +1237,7 @@ If a regex-kfunc baseline is available and reproducible, include it separately.
 * run-path allocations,
 * per-CPU memory footprint.
 
-26.3 Required experiments
+28.3 Required experiments
 
 Self-loop scanner:
 
@@ -1068,7 +1259,24 @@ Many-schema/shared-continuation:
 
 shared continuation must reduce total artifact size
 
-27. Implementation Budget
+⸻
+
+29. Quantitative Success Criteria
+
+v0 is successful only if at least one production-shaped workload demonstrates:
+
+1. 100-prefix policy evaluated in under 500 ns/event on a cache-resident graph.
+2. 100-prefix graph blob below 70 KiB.
+3. 1000-prefix graph blob below 700 KiB.
+4. BPF instruction count remains approximately constant as pattern count grows.
+5. Graph-only policy update avoids BPF program reload.
+6. Negative-heavy pre-ringbuf benchmark reduces ringbuf bytes by at least 2x.
+7. Strong benchmark reduces ringbuf bytes by 10x or more.
+8. Self-loop JIT beats or matches hand-written BPF scanner loop on at least one workload.
+
+⸻
+
+30. Implementation Budget
 
 Target kernel LOC:
 
@@ -1110,7 +1318,9 @@ absolute run-path guardrail:
 
 These are engineering budgets, not ABI guarantees.
 
-28. Roadmap
+⸻
+
+31. Roadmap
 
 v0: Minimal cyclic FSM map
 
@@ -1154,7 +1364,9 @@ v3: Additional producer-side use cases
 * ringbuf prefiltering,
 * LSM policy FSMs.
 
-29. Upstream Strategy
+⸻
+
+32. Upstream Strategy
 
 Do not pitch v0 as:
 
@@ -1192,7 +1404,9 @@ The RFC should ideally include one of:
 * downstream branch or prototype,
 * Reviewed-by / Tested-by / Co-developed-by signal from an affected project.
 
-30. Design Partner Questions
+⸻
+
+33. Design Partner Questions
 
 For Falco/Tetragon-like users, the initial design needs the following data:
 
@@ -1230,7 +1444,9 @@ For Falco/Tetragon-like users, the initial design needs the following data:
 11. Are raw path semantics acceptable, or is canonical path resolution required?
 12. Is this filtering for performance only, or for security enforcement?
 
-31. Open Questions
+⸻
+
+34. Open Questions
 
 The remaining open questions are intentionally narrow.
 
@@ -1245,7 +1461,9 @@ The remaining open questions are intentionally narrow.
 9. Which downstream project should be the first design partner?
 10. Can self-loop JIT beat BPF FSM on real workloads?
 
-32. Maintainer-facing Summary
+⸻
+
+35. Maintainer-facing Summary
 
 io_graph is a BPF-map-shaped runtime artifact for compact cyclic FSMs.
 
@@ -1270,6 +1488,20 @@ The initial implementation is a small BPF map type prototype:
 * minimal self-loop JIT.
 
 The first production-shaped benchmark is pre-ringbuf filtering for high-volume observability/security agents.
+
+Expected v0 envelope:
+
+100 prefixes:
+  15–70 KiB blob
+  150–500 ns/event interpreted
+1000 prefixes:
+  150–700 KiB blob
+  L2-resident target
+update:
+  pointer-publish activation
+  no BPF reload
+strong workload:
+  10x–100x ringbuf I/O reduction
 
 The hypothesis is falsifiable:
 
