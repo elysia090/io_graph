@@ -1,1073 +1,514 @@
-io_graph Specification
+io_graph SPEC.md
 
-Status: Design Draft
-Maturity: Experimental
-Target v0: Out-of-tree BPF map type prototype
-Primary Shape: BPF_MAP_TYPE_IOGRAPH-like cyclic FSM map + step/run kfunc + minimal x86-64 self-loop JIT
-Primary Goal: Preserve minimized cyclic graph artifacts as kernel/BPF-side runtime objects
-Primary Non-Goal: Do not build a general regex engine, a general parser VM, or a new standalone kernel subsystem
+Summary
 
-1. Summary
+io_graph is a BPF map-backed finite-automaton object for high-cardinality kernel-side filtering.
 
-io_graph is a BPF-side runtime artifact for minimized cyclic finite-state graphs.
+It is designed for observability and security agents that need to drop, classify, or route events before ring buffer allocation and userspace rule evaluation.
 
-Its purpose is to keep the cyclic canonical form produced by a userspace oracle alive across the userspace/kernel boundary, rather than flattening it into:
+The initial target is scalable string, prefix, suffix, and small-pattern matching over event fields such as file paths, executable paths, command lines, and selected metadata.
 
-dense transition tables
-generated BPF programs
-large regex scratch regions
-match/capture lists
-decoded event objects
-pointer-heavy kernel data structures
+io_graph is not a replacement for BPF programs. It is a compact, hot-swappable data object used by BPF programs.
 
-The v0 target is a small BPF map type prototype:
+Problem Statement
+
+Production BPF observability and security agents frequently evaluate simple but high-cardinality filters over high-volume event streams.
+
+Examples include:
+
+1. file path prefix filters,
+2. executable path filters,
+3. command-line filters,
+4. event argument string filters,
+5. metadata classifiers,
+6. first-match policy actions.
+
+The common goal is to avoid sending uninteresting events to userspace.
+
+Existing approaches are insufficient:
+
+1. generated BPF branch code grows with the number of patterns,
+2. bounded selector arrays hit verifier and code-size limits,
+3. exact-match BPF maps do not solve prefix or small-pattern matching,
+4. dense transition tables can be too large,
+5. userspace filtering happens after ring buffer allocation and does not reduce kernel-to-userspace I/O,
+6. regex-like engines are too heavy for the regular subset needed by many production filters.
+
+io_graph provides a reusable BPF object for this gap.
+
+Production Evidence
+
+The motivating workload is documented in existing production projects.
+
+Falco users have requested conditional kernel-side event filtering because highly utilized systems can generate large volumes of benign, nearly identical events that still consume resources in the userspace rule-evaluation pipeline. The requested direction is to drop events in kernel space before they are allocated on the ring buffer.
+
+Falco maintainers identified very high event rates and file-open-heavy workloads as a major bottleneck, and suggested aggressive kernel-side IP and file path prefix filtering as a possible direction. They also warned that kernel-side work runs in application context and must remain cheap.
+
+Tetragon already exposes per-hook in-kernel BPF selectors and actions. Its high-load performance discussion similarly points to two options when ring buffers overflow: produce fewer events or optimize userspace consumption. The first option is the space targeted by io_graph.
+
+io_graph therefore starts from a narrow production-shaped problem:
+
+evaluate high-cardinality path / prefix / pattern filters in kernel
+before ring buffer emission
+without growing BPF program size linearly with the number of patterns
+
+Motivation
+
+The primary motivating workload is pre-ringbuf filtering.
+
+A BPF program often has enough context to know that an event is uninteresting before allocating a ring buffer record. However, expressing large string or prefix filter sets directly in BPF code increases verifier pressure, instruction count, and update cost.
+
+io_graph moves the high-cardinality matcher into a map-backed graph object:
+
+event field
+  -> io_graph matcher
+  -> action id
+  -> drop / post / classify
+
+This allows the BPF program to remain small and stable while the policy graph is updated as data.
+
+Design Goals
+
+io_graph should:
+
+1. reduce kernel-to-userspace event I/O for negative-heavy workloads,
+2. avoid BPF program reload for policy updates,
+3. represent large prefix or pattern sets compactly,
+4. keep BPF programs small and verifier-friendly,
+5. run without allocation, locks, FPU, SIMD, or large scratch memory in v0,
+6. provide clear verifier rejection reasons for malformed graph blobs,
+7. allow downstream projects to adopt it incrementally.
+
+Non-goals
+
+io_graph v0 does not aim to:
+
+1. replace BPF programs,
+2. replace userspace policy engines,
+3. implement PCRE,
+4. support captures, backreferences, lookaround, or full regex semantics,
+5. compete with Hyperscan,
+6. provide a general parser VM,
+7. call BPF helpers from graph nodes,
+8. allocate memory on the run path,
+9. use FPU or SIMD in the initial kernel implementation,
+10. introduce a standalone /dev/iograph subsystem,
+11. support multi-architecture JIT in v0,
+12. solve arbitrary graph canonicalization.
+
+The first useful version should be small: a map-backed matcher for scalable kernel-side filtering before event emission.
+
+v0 Scope
+
+v0 focuses on high-cardinality prefix and small-pattern filters for negative-heavy event streams.
+
+Supported in v0:
+
+1. BPF map-backed immutable graph blob,
+2. whole-graph RCU replacement on update,
+3. load/update-time verifier for graph well-formedness,
+4. interpreter execution path,
+5. bpf_iograph_run() kfunc,
+6. small action result: drop, post, class ID, policy ID, or action ID,
+7. benchmarks against generated BPF, bounded selector arrays, exact-match maps, and userspace filtering.
+
+Initial operators:
+
+1. exact string match,
+2. prefix match,
+3. suffix match if cheap enough,
+4. byte-class transition,
+5. default transition,
+6. accept/action state.
+
+Initial target fields:
+
+1. file path,
+2. executable path,
+3. command line,
+4. selected string arguments,
+5. small metadata strings.
+
+Proposed BPF Shape
+
+io_graph should be proposed as a BPF map type.
+
+Conceptual userspace flow:
+
+graph_fd = bpf_map_create(BPF_MAP_TYPE_IOGRAPH, ...);
+bpf_map_update_elem(graph_fd, &key, graph_blob, BPF_ANY);
+
+Conceptual BPF flow:
+
+u32 action = 0;
+ret = bpf_iograph_run(&policy_graph, buf, len, entry, &action);
+if (ret < 0)
+    return 0;
+if (action == IOGRAPH_ACTION_DROP)
+    return 0;
+return submit_event(ctx);
+
+The run path must be:
+
+1. allocation-free,
+2. lock-free or RCU-read-only,
+3. bounded by verified graph metadata,
+4. independent of userspace compiler trust,
+5. safe under graph replacement.
+
+Initial Downstream Integration Shape
+
+Falco-shaped integration
+
+The first downstream integration target is a Falco-style pre-ringbuf path filter.
+
+A modern BPF event filler or tail-called event-specific program can evaluate a raw path-like argument before pushing event parameters into the buffer:
+
+event-specific filler
+  -> read raw path / executable / command field
+  -> run io_graph matcher
+  -> if action == DROP: return early
+  -> otherwise push event to ring buffer
+
+This target intentionally avoids full userspace fd.name semantics in v0. The kernel often sees raw path arguments rather than fully resolved absolute paths. v0 should benchmark raw path and prefix filtering first and treat userspace path resolution as a later integration problem.
+
+Tetragon-shaped integration
+
+Tetragon already models selectors as in-kernel BPF filters and actions.
+
+io_graph can serve as a backend for selector components that currently scale poorly with the number of string or prefix values:
+
+TracingPolicy selector
+  -> compile high-cardinality string/prefix clauses into io_graph blob
+  -> BPF program calls bpf_iograph_run()
+  -> graph returns action_id / class_id / selector match
+
+The initial integration should preserve existing bounded selector behavior and only offload the high-cardinality prefix/pattern subproblem.
+
+Run-path Constraints
+
+io_graph runs in the application context of the instrumented hook. It must not turn kernel-side filtering into a new application slowdown source.
+
+Therefore the run path must be:
+
+1. allocation-free,
+2. bounded,
+3. lock-free or RCU-read-only,
+4. free of FPU/SIMD in v0,
+5. small enough to beat the cost of pushing and processing unwanted events,
+6. measurable with both positive-match and negative-match distributions.
+
+Graph Blob Model
+
+The graph blob is an immutable data object stored in a BPF map.
+
+A minimal v0 blob should contain:
+
+1. header,
+2. node table,
+3. edge table,
+4. accept/action table,
+5. entry state,
+6. verifier metadata,
+7. optional layout/version fields.
+
+Nodes represent states.
+
+Edges represent transitions over input bytes or byte classes.
+
+Accept states produce small action IDs.
+
+The blob should be size-tagged and versioned.
+
+Unknown flags must be rejected.
+
+All offsets and counts must be bounds-checked during map update.
+
+Verifier Requirements
+
+The io_graph verifier should check:
+
+1. header size and version,
+2. node count limit,
+3. edge count limit,
+4. action count limit,
+5. all node ranges are in bounds,
+6. all edge targets are in bounds,
+7. all action IDs are in bounds,
+8. entry state is valid,
+9. transition encoding is supported,
+10. no integer overflow in offset/size computation,
+11. maximum run bounds are known,
+12. graph replacement is safe under RCU.
+
+The verifier should not prove arbitrary program behavior. It only verifies a restricted graph data format.
+
+Execution Semantics
+
+bpf_iograph_run() evaluates a graph against an input buffer.
+
+Conceptually:
+
+state = entry
+for each byte in input:
+    edge = transition(state, byte)
+    if no edge:
+        break
+    state = edge.target
+    if state has accept action:
+        action = state.action
+return final action/state
+
+v0 should support a bounded maximum input length supplied by the caller or verifier-approved callsite constraints.
+
+v0 does not support captures, substring extraction, helper calls, or arbitrary callbacks.
+
+Update Semantics
+
+Graph updates should be whole-object replacements.
+
+On update:
+
+1. userspace builds a new graph blob,
+2. bpf_map_update_elem() submits the blob,
+3. kernel verifier checks it,
+4. if valid, the map swaps the active graph pointer,
+5. old graph memory is released after an RCU grace period.
+
+Updates must not mutate graphs in place.
+
+Readers must see either the old graph or the new graph, never a partially updated graph.
+
+JIT Policy
+
+v0 must have an interpreter.
+
+JIT is optional, but if implemented in v0 it should be narrow.
+
+The initial JIT should focus on:
+
+1. hot self-loop states,
+2. prefix scanner loops,
+3. byte-class skip loops,
+4. small direct transitions.
+
+The JIT must not become a general-purpose VM backend.
+
+If JIT is enabled, interpreter/JIT equivalence tests are mandatory.
+
+Benchmark Workloads
+
+v0 must be evaluated on production-shaped workloads.
+
+Workload A: Falco-style file-open workload
+
+Generate or replay high-rate open/openat-like events with raw path arguments.
+
+Pattern sets:
+
+1. 6 prefixes,
+2. 32 prefixes,
+3. 100 prefixes,
+4. 1000 prefixes.
+
+Compare:
+
+1. no kernel-side filter,
+2. hard-coded BPF prefix checks,
+3. generated BPF branch chain,
+4. exact-match map where applicable,
+5. io_graph interpreter,
+6. io_graph JIT if enabled.
+
+Metrics:
+
+1. ringbuf bytes/sec,
+2. ringbuf drops,
+3. events dropped before buffer allocation,
+4. kernel CPU,
+5. userspace CPU,
+6. cycles per checked byte,
+7. policy update latency,
+8. BPF instruction count,
+9. graph/code/table size.
+
+Workload B: Tetragon-style selector workload
+
+Generate selector-like policies with first-match action semantics.
+
+Measure:
+
+1. maximum policy size accepted before verifier/code-size pressure,
+2. action latency,
+3. drop rate,
+4. update latency,
+5. instruction count,
+6. map memory footprint.
+
+Workload C: self-loop scanner
+
+Input:
+
+1. scan until delimiter,
+2. skip byte class,
+3. path prefix walk,
+4. marker search.
+
+Measure:
+
+1. cycles/byte,
+2. bytes/sec,
+3. instruction count,
+4. branch miss rate if available,
+5. cache miss rate if available.
+
+Success Criteria
+
+Minimum success:
+
+1. 10x smaller artifact than dense table or generated-BPF representation for high-cardinality prefix filters.
+2. 10x faster policy update than BPF program regeneration/reload.
+3. 2x reduction in kernel-to-userspace event bytes for a negative-heavy filtering workload.
+4. No allocation, no locks, no FPU, and no large scratch memory on the run path.
+5. Clear verifier rejection reasons for malformed graph blobs.
+
+Strong success:
+
+1. 50x or greater reduction in ringbuf bytes for a high-drop workload.
+2. 50x or greater reduction in policy artifact size versus dense table.
+3. 1.5x or greater runtime improvement over hand-written BPF for self-loop scanner patterns.
+4. Ability to express 100+ path prefixes without expanding BPF program size linearly.
+5. Prototype integration with at least one production-shaped Falco, Tetragon, Tracee, or similar workload.
+
+Upstream Strategy
+
+io_graph should be proposed incrementally.
+
+Stage 0: out-of-tree prototype
+
+Implement:
+
+1. graph blob format,
+2. verifier,
+3. interpreter,
+4. update path,
+5. bpf_iograph_run() prototype,
+6. benchmark harness.
+
+Stage 1: production-shaped benchmark
+
+Show reduction in:
+
+1. ringbuf pressure,
+2. BPF program size,
+3. policy update cost,
+4. userspace filtering cost.
+
+Stage 2: BPF RFC
+
+Send as a BPF map type proposal, not as a new kernel subsystem.
+
+Initial claim:
+
+BPF lacks a reusable map-backed finite-automaton object for high-cardinality
+kernel-side prefix/pattern filters.
+
+Stage 3: design partner
+
+Validate the workload with at least one observability or security project before a mainline RFC.
+
+Candidate projects:
+
+1. Falco,
+2. Tetragon,
+3. Tracee,
+4. Inspektor Gadget,
+5. similar BPF-based runtime security or observability agents.
+
+Stage 4: mainline candidate
+
+Mainline should be considered only after:
+
+1. the API surface is small,
+2. verifier behavior is understandable,
+3. update lifetime is RCU-safe,
+4. benchmarks show clear wins,
+5. a downstream user can explain the production need.
+
+Design Partner Questions
+
+For Falco/Tetragon-like users, the initial design needs the following data:
+
+1. Which fields need scalable kernel-side filtering?
+    * file path
+    * executable path
+    * command line
+    * container metadata
+    * namespace metadata
+    * event arguments
+2. Which operators are required for the first useful version?
+    * exact
+    * prefix
+    * suffix
+    * contains
+    * small pattern
+    * negative match
+3. How many patterns are needed?
+    * 6
+    * 32
+    * 100
+    * 1000+
+4. What is the event rate?
+5. What percentage of events should be dropped before ring buffer emission?
+6. How often does the policy update?
+7. Is deterministic policy fingerprinting required for rollout safety?
+8. Is explainability required for why an event was dropped?
+9. Is action output enough, or is capture/extraction required?
+10. Which current workaround is used?
+    * larger ring buffer
+    * syscall selection
+    * bounded BPF selectors
+    * userspace filtering
+    * custom downstream patch
+
+Open Questions
+
+1. Should v0 support suffix matching, or should it start with exact/prefix only?
+2. Should the first kernel implementation include JIT, or interpreter only?
+3. Should io_graph be a new BPF map type or an extension of an existing map type?
+4. Should bpf_iograph_run() return only action ID, or both action ID and final state?
+5. How should graph update errors be reported to userspace?
+6. How should graph memory be accounted?
+7. What is the maximum acceptable graph size for v0?
+8. What is the maximum acceptable per-event runtime cost?
+9. How should negative-match policies be represented?
+10. Which downstream project should be the first design partner?
+
+Initial v0 Recommendation
+
+Start with the smallest useful shape:
 
 BPF_MAP_TYPE_IOGRAPH
-  immutable cyclic graph blob
-  load-time verifier
-  interpreter walker
-  experimental step/run kfuncs
-  minimal x86-64 JIT focused on self-loop SCCs
-  RCU whole-graph hot swap
+  immutable prefix/pattern graph blob
+  RCU whole-graph replacement
+  interpreter
+  bpf_iograph_run()
+  action_id result
+  exact + prefix match
+  Falco-style pre-ringbuf benchmark
+
+Do not start with:
 
-The core idea is not that FSM compression is new. It is not.
-The core idea is that the minimized cyclic artifact itself should become the runtime object in kernel/BPF space.
-
-2. Core Thesis
-
-The thesis is:
-
-If the final answer can be computed by maintaining a small invariant over a
-minimized cyclic graph, then io_graph should avoid constructing the large
-intermediate object that conventional implementations materialize.
-
-The small invariant is usually:
-
-current_state
-input cursor
-accept code
-optional bounded accumulator
-
-The avoided intermediate object may be:
-
-#states × alphabet transition table
-schema_count × generated BPF programs
-regex scratch region
-match/capture list
-decoded event object
-mutable pointer tree
-
-The project succeeds only if preserving the cyclic form at runtime gives a measurable benefit over flattening.
-
-3. What io_graph Is Not
-
-io_graph is not:
-
-a general regex engine
-a PCRE implementation
-a Hyperscan replacement
-a general I/O parser
-a general BPF replacement
-a new standalone kernel subsystem in v0
-a new BTF semantics proposal in v0
-a kernel-side minimizer
-a general-purpose JIT VM
-
-v0 explicitly excludes:
-
-backreferences
-lookaround
-capture groups
-general match reporting
-general I/O compaction opcodes
-emit-record ISA
-input/output cursor VM
-helper calls from graph code
-dynamic allocation during run
-FPU/SIMD requirements
-large per-CPU scratch buffers
-kernel-side DFA minimization
-multi-architecture JIT
-producer hooks
-/dev/iograph public UAPI
-certificate model
-
-4. Why This Is Not Just DFA Compression
-
-DFA compression is a mature area. Dense tables, sparse tables, default transitions, byte classes, minimization, and acceleration are all well-known.
-
-io_graph does not claim:
-
-better general DFA compression than D2FA/A-DFA/ClusterFA
-better regex throughput than Hyperscan
-better PCRE expressiveness than full regex engines
-
-Instead, io_graph claims a narrower runtime property:
-
-The minimized cyclic graph should remain the executable kernel/BPF artifact.
-
-Existing regex/DFA implementations often build large runtime structures. For example, Hyperscan’s scratch allocation builds a large composite region containing queues, state buffers, fatbit arrays, deduper logs, SOM storage, delay slots, and other runtime structures.
-
-regex-automata documents the classic dense DFA table shape as:
-
-#states * 256 * sizeof(StateID)
-
-and byte classes reduce this to:
-
-#states * k * sizeof(StateID)
-
-where k is the number of equivalence classes.  ￼
-
-io_graph targets cases where even this kind of table should not be materialized at runtime.
-
-5. IO-aware Execution Principle
-
-For every supported workload, io_graph must answer five questions:
-
-1. What large intermediate object does the naive implementation build?
-2. What final answer is actually needed?
-3. What invariant is sufficient to compute that answer?
-4. What execution order avoids materializing the intermediate object?
-5. Why does the cyclic graph artifact make this cheaper than flattening?
-
-A workload belongs in v0 only if this table can be filled clearly.
-
-Example:
-
-workload:
-  sparse policy FSM
-naive intermediate:
-  dense transition table or generated BPF FSM
-answer:
-  allow/deny/class_id
-invariant:
-  current_state + accept_code
-execution order:
-  stream symbol by symbol, update state, return accept_code
-why cyclic graph:
-  shared continuations and default paths remain compact
-
-6. Winning Conditions
-
-io_graph is useful only if it wins in at least one of these ways.
-
-6.1 Artifact size
-
-The cyclic graph blob should be materially smaller than:
-
-dense transition table
-generated BPF FSM object
-schema_count × parser programs
-
-The claim is not “best compression ever.”
-The claim is:
-
-the minimized cyclic artifact is the runtime artifact
-
-6.2 Update cost
-
-Graph updates should be whole-object RCU swaps:
-
-copy new blob
-verify
-build immutable graph object
-optionally build JIT image
-rcu_assign_pointer()
-call_rcu(old, free)
-
-No BPF program reload should be necessary for a pure graph update.
-
-Target headline:
-
-sub-microsecond atomic graph hot-reload, if graph size permits
-
-6.3 Hot self-loop JIT
-
-A single-state self-loop SCC should be lowered into a native tight loop.
-
-This is the clearest reason to preserve the cyclic artifact through runtime.
-
-cyclic graph survives to runtime
-  -> SCC is visible
-  -> JIT can emit scanner-like loop
-
-6.4 Runtime memory discipline
-
-Run path must be:
-
-allocation-free
-lock-free
-FPU-free
-per-CPU scratch-free
-helper-free inside graph execution
-
-7. Failure Conditions
-
-The hypothesis fails if:
-
-cyclic graph blob is not materially smaller than flat tables
-graph update is not materially cheaper than BPF program reload
-self-loop JIT does not beat generated/hand-written BPF FSM on scanner workloads
-JIT image size cancels graph-size savings
-branch misses dominate sparse graph walking
-real workloads require PCRE/Hyperscan-level expressiveness
-run path needs scratch, allocation, captures, or helper calls
-
-If these happen, the correct fallback is:
-
-userspace oracle/minimizer
-  -> flat table
-  -> generated BPF
-
-not a kernel runtime artifact.
-
-8. Relationship to Existing Kernel/BPF Code
-
-8.1 LPM_TRIE precedent
-
-BPF_MAP_TYPE_LPM_TRIE is a useful precedent: a BPF map type containing a kernel-side data structure with custom allocation, lookup, update, delete, BTF checking, and memory accounting. The implementation embeds struct bpf_map in struct lpm_trie, uses an RCU root pointer, and installs map operations through trie_map_ops.
-
-io_graph should follow this shape:
-
-BPF map type
-custom map_alloc/free/update
-custom memory accounting
-BTF ID for introspection
-BPF-callable step/run interface
-
-8.2 Difference from LPM_TRIE
-
-LPM_TRIE lookup traverses pointer-linked trie nodes using RCU child pointers.  ￼
-
-io_graph should avoid pointer chasing in the hot path:
-
-LPM_TRIE:
-  root pointer -> child pointer -> child pointer -> ...
-io_graph:
-  graph pointer once
-  nodes[state]
-  edges[node.edge_start + i]
-
-The hot path should be contiguous index-based graph walking.
-
-8.3 Ringbuf precedent
-
-BPF ringbuf is also a map-shaped kernel object, but its generic map lookup/update/delete operations return -ENOTSUPP. It exposes behavior through specialized helpers and map operations instead.  ￼
-
-io_graph should do the same if normal key/value semantics do not fit.
-
-map_update_elem:
-  replace graph blob
-map_lookup_elem:
-  unsupported or metadata-only
-map_delete_elem:
-  clear graph or unsupported in v0
-get_next_key:
-  unsupported
-
-8.4 Ringbuf is not the target
-
-BPF ringbuf allocates and maps data pages, including a double-mapping trick for wraparound data.  ￼
-
-io_graph should not compete with ringbuf.
-
-Ringbuf is an output transport.
-io_graph reduces what needs to be materialized before output.
-
-9. Relationship to v2 / Oracle
-
-btf-dedup-v2 or another userspace oracle is responsible for:
-
-minimization
-canonicalization
-equivalence checking
-witness minimization
-explain/diff/debug output
-graph corpus generation
-
-The kernel must not run the oracle.
-
-Kernel responsibilities are limited to:
-
-parse blob
-verify well-formedness
-build immutable graph object
-execute interpreter
-optionally JIT selected structures
-RCU-swap graph objects
-
-The kernel does not verify:
-
-minimality
-canonicality
-language equivalence
-v2 correctness
-source regex correctness
-source BTF correctness
-
-10. v0 Scope
-
-v0 is intentionally small.
-
-Included
-
-BPF_MAP_TYPE_IOGRAPH-like prototype
-canonical cyclic graph blob
-load-time verifier
-interpreter walker
-experimental bpf_iograph_step kfunc
-experimental bpf_iograph_run kfunc
-x86-64 self-loop-focused JIT
-RCU whole-graph update
-selftests
-benchmarks
-
-Excluded
-
-kernel-side minimization
 general regex
 captures
-I/O emit-record opcodes
-general parser VM
-BTF frontend dependency
-certificate model
-producer hooks
-stable UAPI promise
-multi-architecture JIT
+PCRE
+full parser VM
+multi-arch JIT
+standalone subsystem
+userspace policy engine replacement
 
-11. Graph Blob Format
+Core Claim
 
-The v0 blob is a compact cyclic FSM.
+io_graph is a bounded BPF map-backed prefix/pattern matcher for dropping or classifying high-volume events before ring buffer emission.
 
-#define IOG_MAGIC    0x494f4752 /* "IOGR" */
-#define IOG_NO_STATE 0xffffffffu
-struct iog_blob_hdr {
-    __u32 magic;
-    __u16 version;
-    __u16 flags;
-    __u32 node_cnt;
-    __u32 edge_cnt;
-    __u32 entry_cnt;
-    __u32 accept_cnt;
-    __u32 alphabet_size;
-    __u32 initial_state;
-    __u32 nodes_off;
-    __u32 edges_off;
-    __u32 entries_off;
-    __u32 accepts_off;
-    __u32 total_size;
-    __u32 reserved;
-};
-struct iog_node {
-    __u32 edge_start;
-    __u16 edge_cnt;
-    __u16 flags;
-    __u32 default_dst;
-    __u32 accept_id;
-};
-struct iog_edge {
-    __u32 sym_lo;
-    __u32 sym_hi;
-    __u32 dst;
-};
-struct iog_entry {
-    __u32 id;
-    __u32 state;
-};
-struct iog_accept {
-    __u32 id;
-    __u32 code;
-};
-
-11.1 Design notes
-
-iog_node is intentionally small.
-
-edge_start:
-  index into edges[]
-edge_cnt:
-  number of outgoing explicit edges
-default_dst:
-  fallback state, or IOG_NO_STATE
-accept_id:
-  classifier/match/action id
-
-iog_edge uses ranges instead of single symbols:
-
-sym_lo..sym_hi -> dst
-
-This supports byte ranges, character classes, and scanner-like states without expanding to 256 entries.
-
-12. Verifier
-
-The v0 verifier checks well-formedness and safety only.
-
-12.1 Header checks
-
-magic valid
-version supported
-total_size sane
-all section offsets inside blob
-offsets aligned
-reserved == 0
-flags known
-
-12.2 Limit checks
-
-node_cnt <= max_nodes
-edge_cnt <= max_edges
-entry_cnt <= max_entries
-accept_cnt <= max_accepts
-alphabet_size <= max_alphabet
-
-12.3 Node checks
-
-edge_start + edge_cnt <= total edge count
-default_dst == IOG_NO_STATE or default_dst < node_cnt
-accept_id == 0 or accept_id < accept_cnt
-flags known
-
-12.4 Edge checks
-
-sym_lo <= sym_hi
-sym_hi < alphabet_size
-dst < node_cnt
-
-12.5 Per-node edge ordering
-
-For every node:
-
-edges sorted by sym_lo
-edges do not overlap
-
-This lets runtime avoid overlap handling.
-
-12.6 Entry checks
-
-entry state < node_cnt
-initial_state < node_cnt
-
-12.7 Default chain checks
-
-Default transitions are allowed, but bounded.
-
-default chain depth <= IOG_MAX_DEFAULT_DEPTH
-no unbounded default-only cycle
-
-Suggested v0 value:
-
-IOG_MAX_DEFAULT_DEPTH = 8
-
-12.8 What verifier does not check
-
-The verifier does not check:
-
-minimality
-canonicality
-source equivalence
-oracle correctness
-
-13. Runtime Semantics
-
-13.1 Step
-
-Given:
-
-graph
-state
-symbol
-
-Return:
-
-next_state
-
-Algorithm:
-
-node = nodes[state]
-for edge in node.explicit_edges:
-  if edge.sym_lo <= symbol <= edge.sym_hi:
-    return edge.dst
-if node.default_dst != IOG_NO_STATE:
-  return node.default_dst
-return IOG_NO_STATE
-
-The implementation may binary-search, linear-scan, or JIT depending on edge count and node shape.
-
-13.2 Run
-
-run() repeatedly applies step() over an input buffer.
-
-State:
-
-current_state
-cursor
-last_accept_code
-
-Output:
-
-final_state
-last_accept_code
-status
-
-v0 does not produce captures or variable-sized match lists.
-
-14. BPF API
-
-v0 uses experimental kfuncs.
-
-BPF kfuncs are not stable ABI in the same way as helpers; kernel documentation explicitly treats them as kernel-version-dependent extension points.  ￼
-
-14.1 Step kfunc
-
-__bpf_kfunc __u32 bpf_iograph_step(struct bpf_map *map,
-                                   __u32 state,
-                                   __u32 sym);
-
-14.2 Run kfunc
-
-__bpf_kfunc int bpf_iograph_run(struct bpf_map *map,
-                                const __u8 *buf,
-                                __u32 len,
-                                __u32 entry,
-                                __u32 *final_state);
-
-14.3 Step vs run
-
-step() exists for integration and control.
-
-run() is the performance path.
-
-step:
-  simple
-  explicit
-  useful for debugging
-run:
-  amortizes kfunc call overhead
-  enables self-loop JIT
-  benchmark target
-
-15. Map Type Shape
-
-struct bpf_iograph_map {
-    struct bpf_map map;
-    struct iog_graph __rcu *graph;
-    struct mutex update_lock;
-};
-
-15.1 Map create
-
-Suggested constraints:
-
-key_size = sizeof(__u32)
-max_entries = 1
-value_size = maximum blob size, or fixed upper bound
-
-v0 accepts only key 0.
-
-15.2 Map update
-
-BPF_MAP_UPDATE_ELEM(key=0, value=blob)
-
-Update path:
-
-copy blob from userspace
-verify blob
-build immutable graph object
-optionally build JIT image
-lock update_lock
-swap graph pointer with rcu_assign_pointer()
-unlock
-call_rcu(old_graph, free)
-
-15.3 Map lookup
-
-v0 may return -ENOTSUPP.
-
-Alternative:
-
-lookup key 0 returns metadata only
-
-15.4 Map delete
-
-v0 may either:
-
-clear current graph
-
-or:
-
-return -ENOTSUPP
-
-The ringbuf precedent supports specialized maps that do not implement generic lookup/update/delete semantics fully.  ￼
-
-15.5 Memory accounting
-
-map_mem_usage must include:
-
-sizeof(struct bpf_iograph_map)
-current graph object
-nodes
-edges
-entries
-accepts
-JIT image
-
-LPM_TRIE and ringbuf both implement memory accounting in their map ops.
-
-16. In-kernel Graph Object
-
-The kernel may normalize the blob into an immutable object.
-
-struct iog_graph {
-    struct rcu_head rcu;
-    u32 node_cnt;
-    u32 edge_cnt;
-    u32 entry_cnt;
-    u32 accept_cnt;
-    u32 alphabet_size;
-    struct iog_node *nodes;
-    struct iog_edge *edges;
-    struct iog_entry *entries;
-    struct iog_accept *accepts;
-    struct iog_jit_image *jit;
-};
-
-Run path must not allocate.
-
-allowed:
-  rcu_dereference graph
-  read nodes/edges
-  update local state
-  return
-forbidden:
-  kmalloc
-  mutex
-  spinlock
-  FPU
-  per-CPU scratch allocation
-
-17. JIT v0
-
-v0 JIT is not a general graph JIT.
-
-It supports only structures needed to test the thesis.
-
-17.1 Required lowering
-
-single-state self-loop SCC -> tight loop
-sparse outgoing edges -> cmp chain
-accept/reject return
-
-17.2 Optional lowering
-
-dense outgoing edges -> jump table
-
-This may be v0.5 if code size grows.
-
-17.3 Self-loop target
-
-Pattern:
-
-state S:
-  edge class C -> S
-  exit edges -> other states
-
-Lowering:
-
-while cursor < end:
-  sym = *cursor
-  if sym in C:
-    cursor++
-    continue
-  break_to_exit_dispatch
-
-This is the primary v0 performance claim.
-
-17.4 JIT lifetime
-
-JIT image lifetime is tied to struct iog_graph.
-
-new graph:
-  build JIT image before publish
-update:
-  publish new graph with rcu_assign_pointer
-old graph:
-  call_rcu
-  free JIT image after grace period
-
-18. Interpreter
-
-Interpreter is required.
-
-It is used for:
-
-correctness reference
-JIT differential testing
-fallback
-debugging
-fuzzing
-
-The interpreter must produce the same trace as the JIT for:
-
-state sequence
-accept sequence
-final state
-status
-
-19. Differential Testing
-
-Every JIT-supported graph must be tested against the interpreter.
-
-Test matrix:
-
-random sparse graphs
-random self-loop graphs
-random default chains
-random input buffers
-random entry states
-edge ordering edge cases
-invalid blob rejection
-RCU update during execution
-
-Required property:
-
-interpreter_trace == jit_trace
-
-20. Target Workloads
-
-v0 targets exactly three workload families.
-
-20.1 Self-loop scanner
-
-Examples:
-
-scan until delimiter
-scan until non-class byte
-scan until marker byte
-
-Naive intermediate:
-
-regex scratch
-match object
-generated BPF loop
-dense table
-
-Invariant:
-
-state + cursor + accept_code
-
-Win metric:
-
-cycles/byte
-branch misses
-JIT image size
-throughput vs BPF FSM
-
-20.2 Sparse FSM classifier
-
-Examples:
-
-policy classifier
-protocol state classifier
-byte stream classifier
-
-Naive intermediate:
-
-dense transition table
-
-Invariant:
-
-current_state + accept_code
-
-Win metric:
-
-artifact size
-transition/sec
-d-cache misses
-update latency
-
-20.3 Many-schema shared continuation
-
-Examples:
-
-many event schemas
-many policy patterns
-shared error/skip/accept paths
-
-Naive intermediate:
-
-schema_count × generated BPF programs
-schema_count × transition tables
-
-Invariant:
-
-entry_state + current_state + accept_code
-
-Win metric:
-
-total artifact size
-graph update latency
-BPF verifier/JIT reload avoided
-
-21. Benchmarks
-
-21.1 Baselines
-
-A. hand-written C FSM
-   upper bound
-B. hand-written BPF FSM, JITed
-   realistic BPF competitor
-C. generated BPF flat-table FSM, JITed
-   flattening baseline
-D. flat transition table walker
-   data-only flattening baseline
-E. LPM_TRIE-style acyclic map lookup
-   map-type precedent baseline
-F. io_graph interpreter
-   reference
-G. io_graph JIT
-   target
-
-If a regex-kfunc baseline is available and reproducible, include it separately.
-
-21.2 Required metrics
-
-artifact bytes
-flat table bytes
-generated BPF object bytes
-BPF verifier time
-BPF JIT time
-io_graph verify time
-io_graph JIT time
-update latency
-lost invocations during update
-transitions/sec
-cycles/byte
-branch misses
-i-cache misses
-d-cache misses
-run-path allocations
-per-CPU memory footprint
-
-21.3 Required experiments
-
-self-loop scanner:
-  io_graph JIT must beat or match BPF FSM
-sparse FSM:
-  cyclic blob must be materially smaller than flat table
-hot reload:
-  graph update must be materially cheaper than BPF reload
-many-schema:
-  shared continuation must reduce total artifact size
-
-22. Security Model
-
-v0 keeps the attack surface small by design.
-
-22.1 Trusted
-
-kernel verifier
-kernel interpreter
-kernel JIT after verification
-RCU lifetime rules
-
-22.2 Untrusted
-
-userspace graph blob
-v2/oracle
-canonicality claims
-minimality claims
-BPF program inputs
-
-22.3 Run path restrictions
-
-no dynamic allocation
-no sleeping
-no helper calls from graph
-no arbitrary pointer access
-no kernel pointer exposure
-no FPU/SIMD in v0
-no capture buffers
-
-23. Concurrency and Update Model
-
-Graph object is immutable after publication.
-
-Update is whole-object replacement.
-
-old graph remains valid during RCU read-side critical sections
-new graph becomes visible atomically
-old graph freed after grace period
-
-This avoids incremental mutation complexity.
-
-Compared to LPM_TRIE, which mutates a pointer-linked tree under lock and frees nodes through RCU, io_graph should use coarser but simpler whole-graph replacement.  ￼
-
-24. Prior Art Boundary
-
-24.1 DFA compression
-
-DFA compression and minimization are not new.
-
-io_graph does not compete on general compression ratio.
-It competes on runtime preservation of the minimized cyclic artifact.
-
-24.2 Regex engines
-
-Hyperscan-style engines are broader and more powerful.
-
-They also maintain rich runtime state and scratch space.
-
-io_graph wins only by rejecting that expressiveness.
-
-24.3 regex-automata dense DFA
-
-regex-automata explicitly documents dense DFA table size and byte-class reduction.  ￼
-
-io_graph targets cases where table materialization is the wrong runtime artifact.
-
-24.4 BPF map precedents
-
-LPM_TRIE shows BPF map type as a kernel-side lookup data structure.
-
-Ringbuf shows BPF map type can act as a specialized container object rather than a normal key/value map.
-
-io_graph should follow these precedents.
-
-25. Upstream Strategy
-
-Do not pitch v0 as:
-
-new kernel subsystem
-new regex engine
-new BTF runtime
-new parser VM
-
-Pitch v0 as:
-
-BPF map type for minimized cyclic FSM artifacts,
-with optional self-loop JIT and RCU graph replacement.
-
-Patch structure:
-
-1. bpf: add BPF_MAP_TYPE_IOGRAPH skeleton and UAPI
-2. bpf: iograph cyclic graph blob format and verifier
-3. bpf: iograph interpreter walker
-4. bpf: iograph step/run kfuncs
-5. bpf: iograph x86-64 self-loop JIT
-6. selftests/bpf: verifier and interpreter/JIT equivalence
-7. selftests/bpf: benchmarks against BPF FSM, flat table, LPM_TRIE-style lookup
-
-Patches 1–4 must be useful without JIT.
-
-Patch 5 carries the thesis.
-
-26. Implementation Budget
-
-Target kernel LOC:
-
-map type + loader + verifier:
-  ~700 lines
-interpreter:
-  ~300 lines
-step/run kfuncs:
-  ~200 lines
-x86-64 self-loop JIT:
-  ~800-1200 lines
-selftests + benchmark:
-  ~600-900 lines
-
-Target total kernel-side v0:
-
-2500-3500 lines
-
-If kernel-side code exceeds roughly 4000 lines before benchmarks validate the thesis, scope should be reduced.
-
-27. Roadmap
-
-v0: Minimal cyclic FSM map
-
-BPF_MAP_TYPE_IOGRAPH-like map
-graph blob verifier
-interpreter
-step/run kfuncs
-self-loop x86-64 JIT
-RCU whole-graph update
-benchmarks
-
-v0.5: Layout and JIT refinement
-
-small-edge inline nodes, if benchmark proves useful
-dense edge jump table
-hot SCC-only JIT
-better graph memory layout
-
-v1: Upstreamable BPF map type
-
-clean map API
-bpftool introspection
-libbpf support
-selftests
-documentation
-
-v2: BTF/v2 integration
-
-optional BTF/reference-kind graph frontend
-v2 oracle diff/explain integration
-canonicality metadata for userspace only
-
-v3: Producer-side use cases
-
-trace/event policy classifiers
-kernel-side scanners
-ringbuf prefiltering
-LSM policy FSMs
-
-28. Open Questions
-
-Should map_update_elem require fixed value_size == max_blob_size?
-Should variable-size graph blobs use a custom update path?
-Should run() be required in v0, or is step() enough?
-Should dense jump tables be v0 or v0.5?
-What is the default chain depth cap?
-Should JIT be opt-in per map?
-How should bpftool display graph size and JIT size?
-Should accept_code be opaque u32 or structured?
-Should delete clear the graph or be unsupported?
-Can self-loop JIT beat BPF FSM on real workloads?
-
-29. Maintainer-facing Summary
-
-io_graph is a BPF-map-shaped runtime artifact for minimized cyclic FSMs.
-
-It is designed for narrow workloads where existing implementations materialize large intermediate objects, but the final answer only requires a small invariant:
-
-state
-cursor
-accept code
-optional bounded accumulator
-
-It does not compete with general regex engines or Hyperscan.
-It does not introduce a standalone kernel subsystem.
-It does not run minimization in kernel.
-
-The initial implementation is a small BPF map type prototype:
-
-immutable cyclic graph blob
-load-time verifier
-allocation-free walker
-experimental step/run kfuncs
-RCU graph replacement
-minimal self-loop JIT
-
-The hypothesis is falsifiable:
-
-If cyclic graph artifacts are not smaller,
-if updates are not cheaper,
-or if self-loop JIT does not beat BPF FSM baselines,
-then io_graph should not become an upstream feature.
-
-The reason to try it is equally clear:
-
-When the minimized cyclic form is the natural answer,
-flattening it into tables or generated BPF is the intermediate object.
-io_graph avoids constructing that object.
+It is useful only if it reduces real I/O, update cost, or verifier pressure compared with existing BPF representations.
