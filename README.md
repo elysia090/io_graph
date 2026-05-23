@@ -10,6 +10,11 @@ The userspace proof is complete; active work is the kernel v0 path in
 - interpreter kfuncs matching `SPEC.md`;
 - pre-ringbuf BPF demo and selftests.
 
+The userspace benchmark also carries a runtime-only compact graph builder that
+folds verified single-child byte chains into literal-run edges. This is the
+current non-JIT matched-path optimization target before moving it into the
+kernel object layout.
+
 Run:
 
 ```sh

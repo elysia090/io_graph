@@ -14,6 +14,7 @@ The active result track is the kernel prototype:
 | selftest | bad blob update rejection plus DROP-before-ringbuf-reserve path | `kernel/selftests/bpf/` |
 | bench | Linux selftests bench source accepts compiled blobs and raw selectors | `kernel/selftests/bpf/benchs/bench_iograph.c` |
 | pre-ringbuf path | BPF program calls `bpf_iograph_run_action()` before reserve | `bpf/prefilter_demo.bpf.c` |
+| compact runtime | userspace runtime-only single-child chain compression measured against the byte-trie interpreter | `results/userspace/compact-chain-*.md` |
 
 ## Kernel Measurements
 
@@ -34,8 +35,8 @@ and graph rows include the map/kfunc walk. The same-hook floor shows why an
 early miss is dominated by attach/trigger/BPF dispatch rather than traversal.
 The detailed run shape, userspace comparison, and same-bench LPM trie rows live
 in `results/native/current.md`. The userspace primitive now emits batch
-p95/p99/p999 rows and 10000-prefix memory/update rows in
-`results/userspace/current.md`.
+p95/p99/p999 rows, 10000-prefix memory/update rows, and compact-chain runtime
+rows in `results/userspace/current.md`.
 
 Current kernel evidence:
 

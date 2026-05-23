@@ -57,6 +57,7 @@ struct bench_result {
 
 struct case_result {
 	struct bench_result iog;
+	struct bench_result compact;
 	struct bench_result chain;
 	struct bench_result list;
 };
@@ -705,6 +706,20 @@ static double sample_mean_len(const struct sample *samples, size_t nr)
 	return nr ? (double)bytes / (double)nr : 0.0;
 }
 
+static double sample_mean_compact_transitions(const struct iog_cgraph *cg,
+					      const struct sample *samples,
+					      size_t nr)
+{
+	u64 transitions = 0;
+	size_t i;
+
+	for (i = 0; i < nr; i++)
+		transitions += iog_cgraph_count_transitions(cg, samples[i].bytes,
+							    samples[i].len);
+
+	return nr ? (double)transitions / (double)nr : 0.0;
+}
+
 static void print_matched_path_row(size_t prefixes, const char *case_name,
 				   const char *matcher,
 				   const struct bench_result *res,
@@ -922,7 +937,7 @@ static bool mutate_bad_accept_id(void *blob, size_t len)
 	return true;
 }
 
-static bool mutate_default_cycle(void *blob, size_t len)
+static bool mutate_unknown_node_flags(void *blob, size_t len)
 {
 	struct iog_blob_hdr *hdr = blob;
 	struct iog_node *nodes;
@@ -930,7 +945,7 @@ static bool mutate_default_cycle(void *blob, size_t len)
 	if (len < sizeof(*hdr) || !hdr->node_cnt)
 		return false;
 	nodes = (void *)((u8 *)blob + hdr->nodes_off);
-	nodes[0].default_dst = 0;
+	nodes[0].flags = 0x8000u;
 	return true;
 }
 
@@ -984,7 +999,7 @@ static u32 run_verifier_selftests(const void *blob, size_t blob_len)
 		{ "bad_node_edges", mutate_bad_node_edges },
 		{ "bad_edge_dst", mutate_bad_edge_dst },
 		{ "bad_accept_id", mutate_bad_accept_id },
-		{ "default_cycle", mutate_default_cycle },
+		{ "unknown_node_flags", mutate_unknown_node_flags },
 		{ "unsorted_edges", mutate_unsorted_edges },
 		{ "too_long_input", mutate_too_long_input },
 	};
@@ -1033,13 +1048,15 @@ static void assert_equiv(const struct run_ctx *ctx, const struct sample *samples
 
 	for (i = 0; i < sample_nr; i++) {
 		u32 a = match_iog(ctx, samples[i].bytes, samples[i].len);
-		u32 b = match_chain(ctx, samples[i].bytes, samples[i].len);
-		u32 c = match_list(ctx, samples[i].bytes, samples[i].len);
+		u32 b = match_iog_compact(ctx, samples[i].bytes,
+					   samples[i].len);
+		u32 c = match_chain(ctx, samples[i].bytes, samples[i].len);
+		u32 d = match_list(ctx, samples[i].bytes, samples[i].len);
 
-		if (a != b || a != c) {
+		if (a != b || a != c || a != d) {
 			fprintf(stderr,
-				"matcher mismatch at sample %zu: iog=%u chain=%u list=%u\n",
-				i, a, b, c);
+				"matcher mismatch at sample %zu: iog=%u compact=%u chain=%u list=%u\n",
+				i, a, b, c, d);
 			exit(1);
 		}
 	}
@@ -1070,6 +1087,9 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 				double iog_decision = weighted_ns(&neg->iog,
 								  &hit->iog,
 								  drop);
+				double compact_decision =
+					weighted_ns(&neg->compact,
+						    &hit->compact, drop);
 				double chain_decision = weighted_ns(&neg->chain,
 								    &hit->chain,
 								    drop);
@@ -1078,6 +1098,8 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 								   drop);
 				double iog_pre_ns = iog_decision +
 						    post * materialize_ns;
+				double compact_pre_ns = compact_decision +
+							post * materialize_ns;
 				double chain_pre_ns = chain_decision +
 						      post * materialize_ns;
 				double list_pre_ns = list_decision +
@@ -1092,6 +1114,8 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 				double avoided_intermediate_bps =
 					(double)rates[r] * drop * intermediate_bytes;
 				double iog_cores = (double)rates[r] * iog_pre_ns / 1e9;
+				double compact_cores =
+					(double)rates[r] * compact_pre_ns / 1e9;
 				double postdrop_cores =
 					(double)rates[r] * postdrop_ns / 1e9;
 				double chain_cores =
@@ -1099,8 +1123,10 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 				double list_cores =
 					(double)rates[r] * list_pre_ns / 1e9;
 				double saved = postdrop_cores - iog_cores;
+				double compact_saved =
+					postdrop_cores - compact_cores;
 
-				printf("| %zu | %s | %u | %.0f | %u | %.2f | %.2f | %.2f | %.2f | %.1f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f |\n",
+				printf("| %zu | %s | %u | %.0f | %u | %.2f | %.2f | %.2f | %.2f | %.1f | %.3f | %.1f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.2f |\n",
 				       prefixes, neg_case, rates[r], drop * 100.0,
 				       copies[p].payload,
 				       before_bps / 1000000.0,
@@ -1109,11 +1135,15 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 				       avoided_intermediate_bps / 1000000.0,
 				       iog_pre_ns,
 				       iog_cores,
+				       compact_pre_ns,
+				       compact_cores,
 				       postdrop_cores,
 				       chain_cores,
 				       list_cores,
 				       saved < 0.0 ? 0.0 : saved,
-				       list_pre_ns / iog_pre_ns);
+				       compact_saved < 0.0 ? 0.0 : compact_saved,
+				       list_pre_ns / iog_pre_ns,
+				       list_pre_ns / compact_pre_ns);
 			}
 		}
 	}
@@ -1225,10 +1255,13 @@ int main(int argc, char **argv)
 		struct iog_compile_stats stats;
 		struct iog_map map;
 		struct iog_bpf_map *bpf_map = NULL;
+		struct iog_cgraph *compact = NULL;
 		struct iog_layout_stats layout;
+		struct iog_cgraph_stats compact_stats;
 		struct run_ctx ctx;
 		struct case_result early, late, hit;
-		struct bench_result exact_match, prefix_first_action;
+		struct bench_result exact_match, compact_exact_match;
+		struct bench_result prefix_first_action;
 		struct payload_result copy_res[ARRAY_SIZE(payloads)];
 		struct update_result update;
 		struct map_ops_result map_ops;
@@ -1268,6 +1301,16 @@ int main(int argc, char **argv)
 			fprintf(stderr, "layout stats failed: %d\n", ret);
 			return 1;
 		}
+		ret = iog_cgraph_new(iog_map_active_graph(&map), &compact);
+		if (ret) {
+			fprintf(stderr, "compact graph build failed: %d\n", ret);
+			return 1;
+		}
+		ret = iog_cgraph_stats(compact, &compact_stats);
+		if (ret) {
+			fprintf(stderr, "compact stats failed: %d\n", ret);
+			return 1;
+		}
 		memset(&bpf_attr, 0, sizeof(bpf_attr));
 		bpf_attr.key_size = IOG_BPF_KEY_SIZE;
 		bpf_attr.value_size = (u32)blob_len;
@@ -1288,6 +1331,7 @@ int main(int argc, char **argv)
 
 		ctx.map = &map;
 		ctx.bpf_map = bpf_map;
+		ctx.compact = compact;
 		ctx.prefixes = wl.prefixes;
 		ctx.prefix_nr = wl.nr;
 		assert_equiv(&ctx, wl.early, SAMPLE_NR);
@@ -1298,16 +1342,20 @@ int main(int argc, char **argv)
 		printf("case prefixes=%zu iterations=%" PRIu64 "\n", counts[ci],
 		       iterations);
 		printf("\nartifact sizes\n");
-		printf("| prefixes | avg_len | states | edges | iog_blob_B | dense_table_B | gen_chain_src_B | gen_chain_bpf_est_B | list_payload_B | dense/iog | gen_bpf/iog |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %.1f | %" PRIu32 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %.1f | %.1f |\n",
+		printf("| prefixes | avg_len | states | edges | iog_blob_B | compact_runtime_B | dense_table_B | gen_chain_src_B | gen_chain_bpf_est_B | list_payload_B | dense/iog | gen_bpf/iog | blob/compact |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %.1f | %" PRIu32 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %.1f | %.1f | %.2f |\n",
 		       counts[ci],
 		       (double)wl.prefix_bytes / (double)wl.nr,
 		       stats.node_cnt, stats.edge_cnt, stats.blob_bytes,
-		       stats.dense_table_bytes, stats.gen_chain_source_bytes,
+		       compact_stats.mem_bytes, stats.dense_table_bytes,
+		       stats.gen_chain_source_bytes,
 		       stats.gen_chain_bpf_bytes, stats.list_payload_bytes,
 		       (double)stats.dense_table_bytes / (double)stats.blob_bytes,
-		       (double)stats.gen_chain_bpf_bytes / (double)stats.blob_bytes);
+		       (double)stats.gen_chain_bpf_bytes / (double)stats.blob_bytes,
+		       compact_stats.mem_bytes ?
+		       (double)stats.blob_bytes / (double)compact_stats.mem_bytes :
+		       0.0);
 
 		printf("\nverifier selftests\n");
 		printf("| prefixes | negative_cases | result |\n");
@@ -1322,6 +1370,14 @@ int main(int argc, char **argv)
 		       counts[ci], layout.zero_edge_nodes,
 		       layout.single_edge_nodes, layout.small_fanout_nodes,
 		       layout.binary_fanout_nodes, layout.max_fanout);
+
+		printf("\ncompact runtime graph\n");
+		printf("| prefixes | compact_nodes | compact_edges | literal_edges | literal_bytes | max_literal_len | compact_runtime_B |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu64 " |\n",
+		       counts[ci], compact_stats.nodes, compact_stats.edges,
+		       compact_stats.literal_edges, compact_stats.literal_bytes,
+		       compact_stats.max_literal_len, compact_stats.mem_bytes);
 
 		printf("\nbpf map update\n");
 		printf("| prefixes | verify_us | map_update_us | update_iters | active_mem_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |\n");
@@ -1346,24 +1402,33 @@ int main(int argc, char **argv)
 
 		early.iog = bench_match(&ctx, wl.early, SAMPLE_NR,
 					match_iog, iterations);
+		early.compact = bench_match(&ctx, wl.early, SAMPLE_NR,
+					    match_iog_compact, iterations);
 		early.chain = bench_match(&ctx, wl.early, SAMPLE_NR,
 					  match_chain, iterations);
 		early.list = bench_match(&ctx, wl.early, SAMPLE_NR,
 					 match_list, iterations);
 		late.iog = bench_match(&ctx, wl.late, SAMPLE_NR,
 				       match_iog, iterations);
+		late.compact = bench_match(&ctx, wl.late, SAMPLE_NR,
+					   match_iog_compact, iterations);
 		late.chain = bench_match(&ctx, wl.late, SAMPLE_NR,
 					 match_chain, iterations);
 		late.list = bench_match(&ctx, wl.late, SAMPLE_NR,
 					match_list, iterations);
 		hit.iog = bench_match(&ctx, wl.hit, SAMPLE_NR,
 				      match_iog, iterations);
+		hit.compact = bench_match(&ctx, wl.hit, SAMPLE_NR,
+					  match_iog_compact, iterations);
 		hit.chain = bench_match(&ctx, wl.hit, SAMPLE_NR,
 					match_chain, iterations);
 		hit.list = bench_match(&ctx, wl.hit, SAMPLE_NR,
 				       match_list, iterations);
 		exact_match = bench_match(&ctx, wl.exact, SAMPLE_NR,
 					  match_iog, iterations);
+		compact_exact_match = bench_match(&ctx, wl.exact, SAMPLE_NR,
+						  match_iog_compact,
+						  iterations);
 		prefix_first_action = bench_match(&ctx, wl.hit, SAMPLE_NR,
 						  match_iog_first_action,
 						  iterations);
@@ -1375,17 +1440,23 @@ int main(int argc, char **argv)
 
 		print_decision_row(counts[ci], "early_miss", "io_graph",
 				   &early.iog);
+		print_decision_row(counts[ci], "early_miss",
+				   "io_graph_compact_chain", &early.compact);
 		print_decision_row(counts[ci], "early_miss", "gen_chain",
 				   &early.chain);
 		print_decision_row(counts[ci], "early_miss", "list_loop",
 				   &early.list);
 		print_decision_row(counts[ci], "late_miss", "io_graph",
 				   &late.iog);
+		print_decision_row(counts[ci], "late_miss",
+				   "io_graph_compact_chain", &late.compact);
 		print_decision_row(counts[ci], "late_miss", "gen_chain",
 				   &late.chain);
 		print_decision_row(counts[ci], "late_miss", "list_loop",
 				   &late.list);
 		print_decision_row(counts[ci], "hit", "io_graph", &hit.iog);
+		print_decision_row(counts[ci], "hit",
+				   "io_graph_compact_chain", &hit.compact);
 		print_decision_row(counts[ci], "hit", "gen_chain", &hit.chain);
 		print_decision_row(counts[ci], "hit", "list_loop", &hit.list);
 
@@ -1401,6 +1472,14 @@ int main(int argc, char **argv)
 				       sample_mean_len(wl.exact, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci],
+				       dataset == WORKLOAD_LONG_PATH ?
+				       "exact_long_match" : "exact_short_match",
+				       "io_graph_compact_chain",
+				       &compact_exact_match,
+				       sample_mean_len(wl.exact, SAMPLE_NR),
+				       sample_mean_compact_transitions(
+					       compact, wl.exact, SAMPLE_NR));
+		print_matched_path_row(counts[ci],
 				       "prefix_accept_early_return",
 				       "io_graph_accept_inline_first_final_action",
 				       &prefix_first_action,
@@ -1410,6 +1489,11 @@ int main(int argc, char **argv)
 				       "io_graph_accept_inline_last_accept", &hit.iog,
 				       sample_mean_len(wl.hit, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
+		print_matched_path_row(counts[ci], "prefix_longest_match",
+				       "io_graph_compact_chain", &hit.compact,
+				       sample_mean_len(wl.hit, SAMPLE_NR),
+				       sample_mean_compact_transitions(
+					       compact, wl.hit, SAMPLE_NR));
 
 		for (i = 0; i < ARRAY_SIZE(payloads); i++) {
 			copy_res[i].payload = payloads[i];
@@ -1464,14 +1548,15 @@ int main(int argc, char **argv)
 		}
 
 		printf("\npre-ringbuf estimate, prefixes=%zu\n", counts[ci]);
-		printf("| prefixes | neg_case | events/sec | drop_pct | payload_B | before_ringbuf_MB/s | after_ringbuf_MB/s | traffic_reduction | avoided_intermediate_MB/s | iog_prefilter_ns | iog_cores | postdrop_cores | gen_chain_prefilter_cores | list_prefilter_cores | cores_saved_vs_postdrop | speedup_vs_list_prefilter |\n");
-		printf("|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| prefixes | neg_case | events/sec | drop_pct | payload_B | before_ringbuf_MB/s | after_ringbuf_MB/s | traffic_reduction | avoided_intermediate_MB/s | iog_prefilter_ns | iog_cores | compact_prefilter_ns | compact_cores | postdrop_cores | gen_chain_prefilter_cores | list_prefilter_cores | cores_saved_vs_postdrop | compact_cores_saved_vs_postdrop | speedup_vs_list_prefilter | compact_speedup_vs_list_prefilter |\n");
+		printf("|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 		print_estimate_rows(counts[ci], "early_miss", &early, &hit,
 				    copy_res, ARRAY_SIZE(copy_res));
 		print_estimate_rows(counts[ci], "late_miss", &late, &hit,
 				    copy_res, ARRAY_SIZE(copy_res));
 
 		free(blob);
+		iog_cgraph_free(compact);
 		iog_bpf_map_ops.map_free(bpf_map);
 		iog_map_destroy(&map);
 		workload_free(&wl);

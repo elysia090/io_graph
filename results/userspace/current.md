@@ -43,6 +43,67 @@ materializes only POST events.
 | 1000 | 37.5 | 12,364 | 12,363 | 346,264 | 12,710,192 | 89,572 | 932,000 | 45,500 | 36.7 | 2.7 |
 | 10000 | 37.5 | 31,050 | 31,049 | 869,472 | 31,919,400 | 895,072 | 9,320,000 | 455,000 | 36.7 | 10.7 |
 
+## Runtime-Only Chain Compression
+
+The next optimization now exists as a userspace runtime object:
+
+```text
+verified byte-trie blob -> compact run_action graph
+```
+
+The blob format is unchanged. The builder keeps branch, entry, accepting,
+flagged, else-transition, and shared-continuation states, then folds
+single-child byte chains into literal-run edges. Raw result files:
+
+- `results/userspace/compact-chain-current.md`
+- `results/userspace/compact-chain-10000.md`
+- `results/userspace/compact-chain-shared-prefix-1000.md`
+- `results/userspace/compact-chain-long-path-1000.md`
+
+PMU counters were still unavailable in this WSL run, so branch/L1/LLC columns
+remain `na`; rdtsc cycles and p95/p99/p999 batch timings were recorded.
+
+### Compact Runtime Size
+
+| dataset | prefixes | iog_blob_B | compact_runtime_B | compact_nodes | compact_edges | literal_edges | literal_bytes | max_literal_len | blob/compact |
+|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| typical | 100 | 44,592 | 6,472 | 151 | 150 | 137 | 1,576 | 17 | 6.89 |
+| typical | 1000 | 346,264 | 56,506 | 1,379 | 1,378 | 1,329 | 12,314 | 17 | 6.13 |
+| typical | 10000 | 869,472 | 253,476 | 6,955 | 6,954 | 6,757 | 30,852 | 17 | 3.43 |
+| shared-prefix | 1000 | 201,756 | 42,740 | 1,112 | 1,111 | 1,001 | 7,092 | 92 | 4.72 |
+| long-path | 1000 | 64,472 | 37,837 | 1,112 | 1,111 | 1,001 | 2,189 | 189 | 1.70 |
+
+### Compact Decision Cost
+
+| dataset | prefixes | case | byte-trie_ns | compact_ns | compact_p95 | compact_p99 | compact_p999 | speedup |
+|:---|---:|:---|---:|---:|---:|---:|---:|---:|
+| typical | 100 | late_miss | 145.51 | 36.97 | 50.14 | 57.46 | 271.24 | 3.94 |
+| typical | 100 | hit | 177.31 | 34.16 | 36.03 | 47.32 | 227.26 | 5.19 |
+| typical | 1000 | late_miss | 149.42 | 43.05 | 44.92 | 63.23 | 122.50 | 3.47 |
+| typical | 1000 | hit | 200.97 | 49.64 | 61.78 | 85.57 | 277.31 | 4.05 |
+| typical | 10000 | late_miss | 170.87 | 60.14 | 70.40 | 88.80 | 180.50 | 2.84 |
+| typical | 10000 | hit | 235.38 | 62.59 | 64.53 | 111.60 | 511.70 | 3.76 |
+| shared-prefix | 1000 | hit | 611.81 | 31.07 | 30.90 | 33.91 | 151.68 | 19.69 |
+| long-path | 1000 | hit | 1047.64 | 31.91 | 31.92 | 34.43 | 187.91 | 32.83 |
+
+### Matched Path Cost
+
+`matched_transitions/op` is byte-trie state advances for byte-trie rows and
+compact edge advances for compact rows.
+
+| dataset | prefixes | case | matcher | input_B/op | matched_transitions/op | mean_ns/op | ns/input_B | ns/transition | p95 | p99 | p999 |
+|:---|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|
+| typical | 100 | exact_short_match | byte-trie | 37.47 | 37.47 | 179.22 | 4.783 | 4.783 | 206.95 | 358.34 | 750.83 |
+| typical | 100 | exact_short_match | compact | 37.47 | 5.44 | 34.93 | 0.932 | 6.424 | 36.19 | 53.98 | 237.28 |
+| typical | 1000 | exact_short_match | byte-trie | 37.05 | 37.05 | 195.87 | 5.287 | 5.287 | 221.57 | 360.20 | 560.48 |
+| typical | 1000 | exact_short_match | compact | 37.05 | 6.52 | 48.22 | 1.302 | 7.400 | 60.55 | 100.34 | 274.44 |
+| typical | 10000 | exact_short_match | byte-trie | 37.62 | 37.62 | 215.84 | 5.737 | 5.737 | 221.16 | 469.40 | 2139.85 |
+| typical | 10000 | exact_short_match | compact | 37.62 | 7.70 | 60.73 | 1.614 | 7.884 | 64.63 | 75.42 | 126.05 |
+| shared-prefix | 1000 | exact_short_match | byte-trie | 101.00 | 101.00 | 538.50 | 5.332 | 5.332 | 653.37 | 988.20 | 1473.31 |
+| shared-prefix | 1000 | exact_short_match | compact | 101.00 | 4.00 | 35.02 | 0.347 | 8.755 | 44.50 | 54.12 | 469.48 |
+| long-path | 1000 | exact_long_match | byte-trie | 193.00 | 193.00 | 1131.54 | 5.863 | 5.863 | 1532.81 | 1926.99 | 4542.57 |
+| long-path | 1000 | exact_long_match | compact | 193.00 | 4.00 | 33.22 | 0.172 | 8.306 | 31.80 | 47.21 | 1004.39 |
+
 ## Memory Overhead
 
 The map update rows report active graph object memory, not only artifact bytes.

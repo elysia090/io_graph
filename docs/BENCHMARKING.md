@@ -174,17 +174,19 @@ The current C rows are:
 | `io_graph 100 prefix accept-early-return` | hit input with suffix, first-final-action walker |
 | `io_graph 100 prefix longest-match` | hit input with suffix, last-accept walker |
 | `io_graph 1000 with accept_code inline` | same table, `io_graph_accept_inline_*` matcher rows |
+| `io_graph 1000 with single-child chain compression` | `io_graph_compact_chain`, a runtime-only graph built from the verified byte-trie blob |
 
-The next optimization rows must stay separate instead of borrowing interpreter
-numbers:
+The remaining optimization rows must stay separate instead of borrowing
+interpreter numbers:
 
-- `io_graph 1000 with single-child chain compression`;
 - `io_graph 1000 JIT chain compare`;
 - `io_graph 1000 JIT self-loop`.
 
-Those rows require the accept representation, compressed-chain runtime object,
-or JIT image being measured. The table schema is already normalized for them:
-mean ns/op, mean ns/input byte, mean ns/successful transition, and batch
+The compact row reports both byte input cost and compact edge transition cost.
+For compact rows, `matched_transitions/op` is the number of literal/range graph
+edge advances, not the byte-trie transition count. JIT rows still require the
+JIT image being measured. The table schema is normalized for all of them: mean
+ns/op, mean ns/input byte, mean ns/successful transition, and batch
 p95/p99/p999 ns/op.
 
 ## Reject Mix
