@@ -250,7 +250,8 @@ static long iograph_collect_triggers(void)
 	return triggers;
 }
 
-static void iograph_setup_common(bool use_lpm, bool decision_only)
+static void iograph_setup_common(bool use_lpm, bool decision_only,
+				 bool lpm_bounded_copy)
 {
 	size_t selector_len = strlen(args.selector);
 	struct bpf_program *prog;
@@ -284,9 +285,15 @@ static void iograph_setup_common(bool use_lpm, bool decision_only)
 
 	if (use_lpm) {
 		update_lpm_policy();
-		prog = decision_only ?
-			ctx.skel->progs.iograph_lpm_decision_bench_run :
-			ctx.skel->progs.iograph_lpm_bench_run;
+		if (lpm_bounded_copy) {
+			prog = decision_only ?
+				ctx.skel->progs.iograph_lpm_bounded_decision_bench_run :
+				ctx.skel->progs.iograph_lpm_bounded_bench_run;
+		} else {
+			prog = decision_only ?
+				ctx.skel->progs.iograph_lpm_decision_bench_run :
+				ctx.skel->progs.iograph_lpm_bench_run;
+		}
 	} else {
 		err = bpf_map_update_elem(bpf_map__fd(ctx.skel->maps.policy),
 					  &key, ctx.blob, BPF_ANY);
@@ -317,22 +324,32 @@ static void iograph_setup_common(bool use_lpm, bool decision_only)
 
 static void iograph_setup(void)
 {
-	iograph_setup_common(false, false);
+	iograph_setup_common(false, false, false);
 }
 
 static void iograph_lpm_setup(void)
 {
-	iograph_setup_common(true, false);
+	iograph_setup_common(true, false, false);
+}
+
+static void iograph_lpm_bounded_setup(void)
+{
+	iograph_setup_common(true, false, true);
 }
 
 static void iograph_decision_setup(void)
 {
-	iograph_setup_common(false, true);
+	iograph_setup_common(false, true, false);
 }
 
 static void iograph_lpm_decision_setup(void)
 {
-	iograph_setup_common(true, true);
+	iograph_setup_common(true, true, false);
+}
+
+static void iograph_lpm_bounded_decision_setup(void)
+{
+	iograph_setup_common(true, true, true);
 }
 
 static void iograph_hook_floor_setup(void)
@@ -430,6 +447,18 @@ const struct bench bench_iograph_lpm_prefilter = {
 	.report_final = hits_drops_report_final,
 };
 
+const struct bench bench_iograph_lpm_bounded_prefilter = {
+	.name = "iograph-lpm-bounded-prefilter",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_lpm_validate,
+	.setup = iograph_lpm_bounded_setup,
+	.producer_thread = iograph_producer,
+	.consumer_thread = iograph_consumer,
+	.measure = iograph_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
 const struct bench bench_iograph_decision = {
 	.name = "iograph-decision",
 	.argp = &bench_iograph_argp,
@@ -468,6 +497,17 @@ const struct bench bench_iograph_lpm_decision = {
 	.argp = &bench_iograph_argp,
 	.validate = iograph_lpm_decision_validate,
 	.setup = iograph_lpm_decision_setup,
+	.producer_thread = iograph_producer,
+	.measure = iograph_decision_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_lpm_bounded_decision = {
+	.name = "iograph-lpm-bounded-decision",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_lpm_decision_validate,
+	.setup = iograph_lpm_bounded_decision_setup,
 	.producer_thread = iograph_producer,
 	.measure = iograph_decision_measure,
 	.report_progress = hits_drops_report_progress,

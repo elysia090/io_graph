@@ -147,19 +147,23 @@ extern const struct bench bench_strncmp_helper;
 +extern const struct bench bench_iograph_prefilter;
 +extern const struct bench bench_iograph_compact_prefilter;
 +extern const struct bench bench_iograph_lpm_prefilter;
++extern const struct bench bench_iograph_lpm_bounded_prefilter;
 +extern const struct bench bench_iograph_decision;
 +extern const struct bench bench_iograph_compact_decision;
 +extern const struct bench bench_iograph_hook_floor;
 +extern const struct bench bench_iograph_lpm_decision;
++extern const struct bench bench_iograph_lpm_bounded_decision;
 @@
- 	&bench_strncmp_helper,
+	&bench_strncmp_helper,
 +	&bench_iograph_prefilter,
 +	&bench_iograph_compact_prefilter,
 +	&bench_iograph_lpm_prefilter,
++	&bench_iograph_lpm_bounded_prefilter,
 +	&bench_iograph_decision,
 +	&bench_iograph_compact_decision,
 +	&bench_iograph_hook_floor,
 +	&bench_iograph_lpm_decision,
++	&bench_iograph_lpm_bounded_decision,
 ```
 
 Example after building the selftests bench binary:
@@ -171,12 +175,16 @@ Example after building the selftests bench binary:
 	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-lpm-prefilter --prefixes prefixes.txt \
 	--selector /drop/event --drop-action 1
+./bench -w 1 -d 5 iograph-lpm-bounded-prefilter --prefixes prefixes.txt \
+	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-decision --blob policy.iog \
 	--selector /drop/event
 ./bench -w 1 -d 5 iograph-compact-decision --blob policy.iog \
 	--selector /drop/event
 ./bench -w 1 -d 5 iograph-hook-floor --selector /drop/event
 ./bench -w 1 -d 5 iograph-lpm-decision --prefixes prefixes.txt \
+	--selector /drop/event
+./bench -w 1 -d 5 iograph-lpm-bounded-decision --prefixes prefixes.txt \
 	--selector /drop/event
 ```
 
@@ -186,3 +194,9 @@ runtime. The compact-named rows are aliases that make the current runtime
 explicit in result tables; they are not a same-build byte-trie versus compact
 A/B comparison. The old byte-trie matched rows are historical snapshots unless
 a separate debug kfunc or map flag is added for benchmarking.
+
+When building selftests against `/sys/kernel/btf/vmlinux`, the booted kernel
+must already carry `BPF_MAP_TYPE_IOGRAPH`. A stock WSL kernel can compile the
+host bench objects, but generated `vmlinux.h` will not contain the experimental
+map enum, so the BPF skeleton build is expected to fail until the custom kernel
+is booted.

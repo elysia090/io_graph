@@ -221,6 +221,7 @@ static u32 iograph_walk_action_compact(const struct bpf_iograph_graph *graph,
 			i++;
 		} else {
 			edge = &graph->compact_edges[edge_idx];
+			i++;
 			if (edge->flags & BPF_IOGRAPH_CEDGE_LITERAL) {
 				if (len - i < edge->lit_len ||
 				    memcmp(buf + i,
@@ -228,9 +229,9 @@ static u32 iograph_walk_action_compact(const struct bpf_iograph_graph *graph,
 					   edge->lit_len))
 					break;
 				i += edge->lit_len;
-			} else {
-				i++;
 			}
+			if (edge->flags & BPF_IOGRAPH_CEDGE_FINAL_ACTION)
+				return edge->dst;
 			node = &graph->compact_nodes[edge->dst];
 		}
 

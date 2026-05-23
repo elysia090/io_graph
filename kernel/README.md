@@ -31,6 +31,9 @@ Current kernel-side v0 coverage:
   the run path;
 - graph publication also builds a runtime-only compact graph from the verified
   byte-trie blob by folding single-child byte chains into literal-run edges;
+- compact literal edges store only tail bytes after the first dispatch byte,
+  and terminal `IOG_NODE_F_FINAL_ACTION` leaves can be carried by the incoming
+  compact edge as an immediate action return;
 - compact runtime build is part of publication: if allocation or construction
   fails, the update fails before RCU publication and the old graph remains
   active;
@@ -59,6 +62,9 @@ Current kernel-side v0 coverage:
 - the selftests bench also exposes `iograph-compact-decision` and
   `iograph-compact-prefilter` aliases so refreshed kernel results can name the
   current compact `run_action()` runtime explicitly;
+- the LPM trie baseline has both full-key-copy rows and bounded-copy rows so
+  the io_graph direct-buffer path is compared against an LPM key-materializing
+  path without hiding short-selector copy cost;
 - map update caches single-entry state and the input bound in the published
   graph object for the common prefilter entry path;
 - map memory accounting includes the copied blob plus compact entries, compact

@@ -12,7 +12,7 @@ The active result track is the kernel prototype:
 | interpreter | required non-JIT execution path; `run_action()` uses the compact runtime graph, `run()`/`step()` keep the byte-trie diagnostic paths | `kernel/bpf/iograph_kfunc.c` |
 | kfunc API | action-only prefilter kfunc plus run/step observation paths; kfuncs hold short internal RCU read sections and are available to the raw-tracepoint bench path | `kernel/bpf/iograph_kfunc.c` |
 | selftest | bad blob update rejection plus DROP-before-ringbuf-reserve path | `kernel/selftests/bpf/` |
-| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit | `kernel/selftests/bpf/benchs/bench_iograph.c` |
+| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit; LPM has full-key and bounded-copy rows | `kernel/selftests/bpf/benchs/bench_iograph.c` |
 | pre-ringbuf path | BPF program calls `bpf_iograph_run_action()` before reserve | `bpf/prefilter_demo.bpf.c` |
 | compact runtime | userspace and kernel map-publication single-child chain compression; refreshed kernel rows now beat the same-hook LPM baseline on matched prefix paths | `src/iog_compact.c`, `kernel/bpf/iograph_map.c`, `results/native/compact-2026-05-23.md` |
 
@@ -48,6 +48,14 @@ userspace BPF-shaped shim with the published compact graph, it shows typical
 same WSL userspace environment. The older 33.32 ns / 45.44 ns rows in that
 file are preserved as direct compact-primitive tail snapshots and bypass the
 published map-object boundary.
+The next compact hot-path follow-up is in
+`results/userspace/hotpath-tail-2026-05-23.md`: literal edges now store only
+tail bytes, final-action terminal leaves can return from the incoming compact
+edge, and non-entry terminal leaves are pruned from the compact node array.
+That reduces typical 1000-prefix compact runtime memory to 39,177 B and
+typical 10000-prefix compact runtime memory to 164,799 B. The kernel table
+below is still the latest booted-kernel measurement and predates this
+tail/pruning remeasurement.
 
 Current kernel evidence:
 

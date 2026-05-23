@@ -3,7 +3,8 @@
 
 #include <iog/graph.h>
 
-#define IOG_CEDGE_LITERAL	1u
+#define IOG_CEDGE_LITERAL	(1u << 0)
+#define IOG_CEDGE_FINAL_ACTION	(1u << 1)
 
 struct iog_cnode {
 	u32 edge_start;
@@ -14,8 +15,14 @@ struct iog_cnode {
 };
 
 struct iog_cedge {
+	/*
+	 * dst is a compact node id unless IOG_CEDGE_FINAL_ACTION is set, in
+	 * which case it is the final action code returned after the edge
+	 * matches.
+	 */
 	u32 dst;
 	u32 lit_off;
+	/* Tail bytes after the first dispatch byte. */
 	u32 lit_len;
 	u8 sym_lo;
 	u8 sym_hi;

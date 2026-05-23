@@ -4,6 +4,10 @@ Date: 2026-05-23
 
 This file records the latest kernel-backed measurement rows. Detailed raw output
 and environment notes are in `results/native/compact-2026-05-23.md`.
+The rows below predate the later compact tail/pruning userspace follow-up
+recorded in `results/userspace/hotpath-tail-2026-05-23.md`; rerun this kernel
+matrix after booting a kernel built from that source if exact post-pruning
+kernel numbers are needed.
 
 ## Measurement Shape
 
@@ -47,8 +51,12 @@ The previous byte-trie kernel snapshot had matched decisions around
 ## Same-Bench LPM Trie
 
 `iograph-lpm-decision` runs the same selector and attach/trigger path through
-`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so this bench
-uses one per-CPU scratch key object before the LPM helper call.
+`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so this
+historical row uses one per-CPU scratch key object and copies the full 256 B
+selector cap before the LPM helper call. The source now also contains
+`iograph-lpm-bounded-decision` and `iograph-lpm-bounded-prefilter` rows that
+copy only `selector_len` bytes; those rows require a refreshed booted-kernel
+run.
 
 | case | compact ns/op | LPM ns/op | compact speedup |
 |:---|---:|---:|---:|
@@ -72,6 +80,8 @@ in this WSL kernel run.
 - `bench iograph-lpm-decision` and `bench iograph-lpm-prefilter` loaded the
   corresponding prefix text files into an LPM trie baseline on the same raw
   tracepoint path.
+- The source now has bounded-copy LPM bench variants, but this dated kernel run
+  predates those rows.
 - The compact prefilter DROP row returned before `bpf_ringbuf_reserve()`, so
   rejected events contributed 0 ringbuf bytes in this bench path.
 - The WSL environment exposes no CPU PMU device. Branch/cache/L1/LLC

@@ -12,7 +12,9 @@ The userspace proof is complete; active work is the kernel v0 path in
 
 The userspace benchmark and kernel map publication path both build a
 runtime-only compact graph that folds verified single-child byte chains into
-literal-run edges. The source blob remains the verified byte-trie artifact;
+literal-run edges. Literal edges store only tail bytes after the dispatch byte,
+and terminal final-action leaves can be returned directly from the incoming
+compact edge. The source blob remains the verified byte-trie artifact;
 `run_action()` uses the compact runtime graph for the pre-emission hot path.
 
 Run:

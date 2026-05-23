@@ -14,6 +14,7 @@
 #define BPF_IOGRAPH_MAX_ACCEPTS		65536u
 #define BPF_IOGRAPH_MAX_INPUT_LEN	65536u
 #define BPF_IOGRAPH_CEDGE_LITERAL	(1u << 0)
+#define BPF_IOGRAPH_CEDGE_FINAL_ACTION	(1u << 1)
 
 struct bpf_iograph_cnode {
 	u32 edge_start;
@@ -24,8 +25,13 @@ struct bpf_iograph_cnode {
 };
 
 struct bpf_iograph_cedge {
+	/*
+	 * dst is a compact node id unless BPF_IOGRAPH_CEDGE_FINAL_ACTION is
+	 * set, in which case it is the final action code.
+	 */
 	u32 dst;
 	u32 lit_off;
+	/* Tail bytes after the first dispatch byte. */
 	u32 lit_len;
 	u8 sym_lo;
 	u8 sym_hi;

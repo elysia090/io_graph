@@ -60,7 +60,16 @@ cd ~/src/wsl2-linux-iograph/tools/testing/selftests/bpf
 	--prefixes /path/to/prefixes-100.txt \
 	--selector /drop/event
 
+./bench -w 1 -d 5 iograph-lpm-bounded-decision \
+	--prefixes /path/to/prefixes-100.txt \
+	--selector /drop/event
+
 ./bench -w 1 -d 5 iograph-lpm-prefilter \
+	--prefixes /path/to/prefixes-100.txt \
+	--selector /drop/event \
+	--drop-action 1
+
+./bench -w 1 -d 5 iograph-lpm-bounded-prefilter \
 	--prefixes /path/to/prefixes-100.txt \
 	--selector /drop/event \
 	--drop-action 1
@@ -77,10 +86,12 @@ rows when the LPM key length remains representable.
 | typical | 100 | hit | iograph-compact-decision | | | | n/a | |
 | typical | 100 | hit DROP | iograph-compact-prefilter | | | | 0 B | |
 | typical | 100 | hit | iograph-lpm-decision | | | | n/a | |
+| typical | 100 | hit | iograph-lpm-bounded-decision | | | | n/a | |
 | typical | 1000 | floor | iograph-hook-floor | | | 0.0 | n/a | |
 | typical | 1000 | hit | iograph-compact-decision | | | | n/a | |
 | typical | 1000 | hit DROP | iograph-compact-prefilter | | | | 0 B | |
 | typical | 1000 | hit | iograph-lpm-decision | | | | n/a | |
+| typical | 1000 | hit | iograph-lpm-bounded-decision | | | | n/a | |
 
 ## PMU Counters
 

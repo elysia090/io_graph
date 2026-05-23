@@ -65,6 +65,9 @@ remain `na`; rdtsc cycles and p95/p99/p999 batch timings were recorded.
 The current publication-shaped compact shim and update/memory split are tracked
 in `results/userspace/compact-runtime-2026-05-23.md`; older rows below are kept
 as the frozen proof snapshot unless a section says otherwise.
+The latest hot-path follow-up is
+`results/userspace/hotpath-tail-2026-05-23.md`, which adds literal tail-only
+storage, final-action edge returns, and terminal final-action leaf pruning.
 
 ### Compact Runtime Size
 

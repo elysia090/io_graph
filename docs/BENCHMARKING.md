@@ -74,8 +74,10 @@ microbenchmark:
 | `iograph-hook-floor` | `raw_tp/sys_enter`, triggered by `getpgid` | none | no graph lookup, batched host trigger counter |
 | `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; both names use the current compact `run_action()` path after publication |
 | `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; both names use the current compact runtime, and the compact name is the explicit current row |
-| `iograph-lpm-decision` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | action only, batched host trigger counter |
-| `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | current kernel bench event is small |
+| `iograph-lpm-decision` | same `raw_tp/sys_enter` bench | same selector plus full 256 B LPM key scratch copy | action only, batched host trigger counter |
+| `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus full 256 B LPM key scratch copy | current kernel bench event is small |
+| `iograph-lpm-bounded-decision` | same `raw_tp/sys_enter` bench | same selector plus bounded LPM key scratch copy | action only; copies only `selector_len` bytes into the LPM key |
+| `iograph-lpm-bounded-prefilter` | same `raw_tp/sys_enter` bench | same selector plus bounded LPM key scratch copy | LPM baseline variant that avoids the short-selector 256 B copy penalty |
 
 The DROP path reaches the action answer before ringbuf reservation. The POST
 copy rows stay separate because event materialization is the large intermediate
@@ -158,14 +160,18 @@ The verified source blob format still carries `accept_id -> accept_code`, but
 the run path does not need an `accepts[]` lookup on every accepting node.
 Userspace map publication and kernel map publication then derive a compact
 runtime graph for the action-only prefilter path: single-child byte chains
-become literal-run edges, while range edges, accepting nodes, final-action
-nodes, entry states, and consuming else transitions remain explicit graph
-nodes. The byte-trie matcher remains in the benchmark as
+become literal-run edges, while range edges, accepting nodes with outgoing
+override potential, entry states, and consuming else transitions remain
+explicit graph nodes. The byte-trie matcher remains in the benchmark as
 `io_graph_byte_trie`; it is a primitive comparison row, not the current
 BPF-shaped event path.
 Accepting leaf nodes are emitted with `IOG_NODE_F_FINAL_ACTION`, which lets the
 last-accept action walker return early without changing longest-match
 semantics for nodes that still have outgoing override edges.
+The compact runtime stores only literal tail bytes after the first dispatch
+byte and can turn terminal final-action leaves into final-action edges. That
+avoids re-comparing the dispatch byte and removes non-entry terminal leaf
+nodes from the action-only compact graph.
 
 `io_graph_accept_inline_first_final_action` returns at the first non-zero
 action. That path is only the right semantics when the caller knows the

@@ -123,6 +123,27 @@ static __always_inline __u32 iograph_lpm_action(__u32 len)
 	return action ? *action : 0;
 }
 
+static __always_inline __u32 iograph_lpm_bounded_action(__u32 len)
+{
+	struct iograph_lpm_key *key;
+	__u32 zero = 0;
+	__u32 *action;
+	int i;
+
+	key = bpf_map_lookup_elem(&lpm_scratch, &zero);
+	if (!key)
+		return 0;
+	key->prefixlen = len * 8u;
+#pragma unroll
+	for (i = 0; i < IOGRAPH_BENCH_SELECTOR_CAP; i++) {
+		if ((__u32)i >= len)
+			break;
+		key->data[i] = selector[i];
+	}
+	action = bpf_map_lookup_elem(&lpm_policy, key);
+	return action ? *action : 0;
+}
+
 SEC("raw_tp/sys_enter")
 int iograph_lpm_bench_run(struct bpf_raw_tracepoint_args *ctx)
 {
@@ -136,6 +157,18 @@ int iograph_lpm_bench_run(struct bpf_raw_tracepoint_args *ctx)
 }
 
 SEC("raw_tp/sys_enter")
+int iograph_lpm_bounded_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u32 len = selector_len;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	return iograph_emit_action(iograph_lpm_bounded_action(len));
+}
+
+SEC("raw_tp/sys_enter")
 int iograph_lpm_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 {
 	__u32 len = selector_len;
@@ -145,6 +178,18 @@ int iograph_lpm_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	return iograph_lpm_action(len) != 0;
+}
+
+SEC("raw_tp/sys_enter")
+int iograph_lpm_bounded_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u32 len = selector_len;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	return iograph_lpm_bounded_action(len) != 0;
 }
 
 char LICENSE[] SEC("license") = "GPL";

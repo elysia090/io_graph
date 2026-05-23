@@ -198,6 +198,16 @@ static void iograph_compact_keep_entries(const struct bpf_iograph_graph *graph,
 		keep[graph->entries[i].state] = 1;
 }
 
+static bool iograph_compact_final_action_leaf(const struct bpf_iograph_graph *graph,
+					      u32 state)
+{
+	const struct iog_node *node = &graph->nodes[state];
+
+	return node->accept_id &&
+	       (node->flags & IOG_NODE_F_FINAL_ACTION) &&
+	       node->edge_cnt == 0 && node->default_dst == IOG_NO_STATE;
+}
+
 static int iograph_compact_build_keep(const struct bpf_iograph_graph *graph,
 				      u8 *keep, u32 *incoming)
 {
@@ -208,11 +218,15 @@ static int iograph_compact_build_keep(const struct bpf_iograph_graph *graph,
 		const struct iog_node *node = &graph->nodes[i];
 		u32 j;
 
-		if (node->accept_id || node->flags ||
-		    node->default_dst != IOG_NO_STATE || node->edge_cnt != 1)
+		if (iograph_compact_final_action_leaf(graph, i)) {
+			/* Incoming edges can carry this terminal action. */
+		} else if (node->accept_id || node->flags ||
+			   node->default_dst != IOG_NO_STATE ||
+			   node->edge_cnt != 1) {
 			keep[i] = 1;
-		else if (!iograph_byte_edge(&graph->edges[node->edge_start]))
+		} else if (!iograph_byte_edge(&graph->edges[node->edge_start])) {
 			keep[i] = 1;
+		}
 		if (node->default_dst != IOG_NO_STATE) {
 			incoming[node->default_dst]++;
 			keep[node->default_dst] = 1;
@@ -223,13 +237,15 @@ static int iograph_compact_build_keep(const struct bpf_iograph_graph *graph,
 				&graph->edges[node->edge_start + j];
 
 			incoming[edge->dst]++;
-			if (!iograph_byte_edge(edge))
+			if (!iograph_byte_edge(edge) &&
+			    !iograph_compact_final_action_leaf(graph, edge->dst))
 				keep[edge->dst] = 1;
 		}
 	}
 
 	for (i = 0; i < graph->hdr->node_cnt; i++) {
-		if (incoming[i] != 1)
+		if (!iograph_compact_final_action_leaf(graph, i) &&
+		    incoming[i] != 1)
 			keep[i] = 1;
 	}
 
@@ -256,7 +272,7 @@ static u32 iograph_compact_chain_len(const struct bpf_iograph_graph *graph,
 {
 	u32 nr = 1;
 
-	while (!keep[dst]) {
+	while (!keep[dst] && !iograph_compact_final_action_leaf(graph, dst)) {
 		const struct iog_node *node = &graph->nodes[dst];
 		const struct iog_edge *edge = &graph->edges[node->edge_start];
 
@@ -270,7 +286,7 @@ static u32 iograph_compact_chain_len(const struct bpf_iograph_graph *graph,
 static u32 iograph_compact_chain_endpoint(const struct bpf_iograph_graph *graph,
 					  const u8 *keep, u32 dst)
 {
-	while (!keep[dst]) {
+	while (!keep[dst] && !iograph_compact_final_action_leaf(graph, dst)) {
 		const struct iog_node *node = &graph->nodes[dst];
 		const struct iog_edge *edge = &graph->edges[node->edge_start];
 
@@ -280,15 +296,16 @@ static u32 iograph_compact_chain_endpoint(const struct bpf_iograph_graph *graph,
 	return dst;
 }
 
-static void iograph_compact_copy_literal(const struct bpf_iograph_graph *graph,
-					 const u8 *keep,
-					 const struct iog_edge *first, u8 *dst)
+static void iograph_compact_copy_literal_tail(const struct bpf_iograph_graph *graph,
+					      const u8 *keep,
+					      const struct iog_edge *first,
+					      u8 *dst)
 {
 	const struct iog_edge *edge = first;
 	u32 state = edge->dst;
 
-	*dst++ = (u8)edge->sym_lo;
-	while (!keep[state]) {
+	while (!keep[state] &&
+	       !iograph_compact_final_action_leaf(graph, state)) {
 		const struct iog_node *node = &graph->nodes[state];
 
 		edge = &graph->edges[node->edge_start];
@@ -320,9 +337,10 @@ static int iograph_compact_count_storage(const struct bpf_iograph_graph *graph,
 				clen = iograph_compact_chain_len(graph, keep,
 								 edge->dst);
 			if (clen > 1) {
-				u32 next_lits;
+				u32 next_lits, tail_len = clen - 1;
 
-				if (check_add_overflow(lits, clen, &next_lits))
+				if (check_add_overflow(lits, tail_len,
+						       &next_lits))
 					return -E2BIG;
 				lits = next_lits;
 			}
@@ -436,17 +454,24 @@ static int iograph_compact_build_edges(struct bpf_iograph_graph *graph,
 									 keep,
 									 edge->dst);
 			}
-			cedge->dst = orig_to_compact[endpoint];
+			if (iograph_compact_final_action_leaf(graph, endpoint)) {
+				cedge->flags |= BPF_IOGRAPH_CEDGE_FINAL_ACTION;
+				cedge->dst = graph->nodes[endpoint].accept_id;
+			} else {
+				cedge->dst = orig_to_compact[endpoint];
+			}
 			if (clen > 1) {
-				cedge->flags = BPF_IOGRAPH_CEDGE_LITERAL;
+				u32 tail_len = clen - 1;
+
+				cedge->flags |= BPF_IOGRAPH_CEDGE_LITERAL;
 				cedge->lit_off = lit_pos;
-				cedge->lit_len = clen;
+				cedge->lit_len = tail_len;
 				graph->compact_literal_edge_cnt++;
-				if (clen > graph->compact_max_literal_len)
-					graph->compact_max_literal_len = clen;
-				iograph_compact_copy_literal(graph, keep, edge,
-							     &graph->compact_lits[lit_pos]);
-				lit_pos += clen;
+				if (tail_len > graph->compact_max_literal_len)
+					graph->compact_max_literal_len = tail_len;
+				iograph_compact_copy_literal_tail(graph, keep, edge,
+								  &graph->compact_lits[lit_pos]);
+				lit_pos += tail_len;
 			}
 		}
 	}
