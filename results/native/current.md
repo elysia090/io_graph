@@ -6,8 +6,9 @@ as parallel sources of truth.
 
 ## Measurement Shape
 
-- Runtime: WSL2 x86-64 with a booted patched
-  `6.18.26.1-microsoft-standard-WSL2+ #2` kernel.
+- Runtime: WSL2 x86-64 with a rebuilt patched
+  `6.18.26.1-microsoft-standard-WSL2+` kernel that includes the current
+  io_graph overlay and indexed action kfunc.
 - Kernel build shape: stock Microsoft WSL kernel configuration plus the
   io_graph overlay, built from a disposable Linux worktree.
 - Source validation shape: normal edit/build cycles use the incremental
@@ -47,10 +48,28 @@ The previous byte-trie kernel snapshot had matched decisions around
 352-356 ns/op. The compact runtime brings matched decisions down to
 164-176 ns/op on the same raw-tracepoint measurement shape.
 
-Current source also adds `bpf_iograph_run_action_idx()` and the
-`iograph-compact-idx-decision` bench row for direct entry-index selection. That
-row is not folded into this table until the patched 6.18 WSL kernel is booted
-again and the same-hook matrix is refreshed.
+### Minimal Reboot Refresh
+
+The patched 6.18 WSL kernel was rebuilt and booted again so the BTF visible to
+the BPF loader includes `bpf_iograph_run_action_idx()`. The table below is a
+minimal same-hook refresh for the 1000-prefix typical policy. It intentionally
+does not replace the broader matrix above because the 100-prefix,
+shared-prefix, long-path, and POST-payload rows were not rerun in this pass.
+
+| case | operations_M/s | throughput_ns/op | floor_delta_ns |
+|:---|---:|---:|---:|
+| empty same-hook BPF row | 8.757 +/- 0.020 | 114.19 | 0.00 |
+| 1000 typical compact hit | 5.953 +/- 0.017 | 167.98 | 53.79 |
+| 1000 typical compact indexed hit | 5.830 +/- 0.078 | 171.53 | 57.34 |
+| 1000 typical compact prefilter DROP | 5.789 +/- 0.160 | 172.74 | 58.55 |
+| 1000 typical LPM bounded-copy hit | 4.209 +/- 0.009 | 237.59 | 123.40 |
+| 1000 typical LPM bounded-copy prefilter DROP | 4.204 +/- 0.028 | 237.87 | 123.68 |
+
+The indexed row validates the new kfunc load and execution path. This policy has
+one entry, so the normal `run_action()` path already uses the single-entry fast
+path; a multi-entry policy is needed to show the intended entry-lookup benefit.
+In this minimal refresh, compact `io_graph` remains faster than bounded-copy LPM
+by 1.41x on the hit row and 1.38x on the DROP row.
 
 ## Same-Bench LPM Trie
 
@@ -118,9 +137,12 @@ while DROP rows return before reserve:
   `scripts/build_linux_overlay_minimal.sh` builds `kernel/bpf/iograph_map.o`
   and `kernel/bpf/iograph_kfunc.o` through the patched Linux build system
   without a full kernel rebuild.
-- A refreshed selftests bench run still requires booting the patched 6.18 WSL
-  kernel. A stock WSL kernel can expose BTF, but it does not contain the
-  experimental io_graph map type and kfuncs needed by the BPF skeleton.
+- A refreshed selftests bench run requires booting a patched 6.18 WSL kernel.
+  The old boot artifact could load the compact rows, but lacked the indexed
+  action kfunc in kernel BTF, so the boot `bzImage` was relinked and replaced.
+- The selftests bench object build uses explicit volatile byte-copy loops in
+  the BPF program so bounded selector copies are not lowered into unsupported
+  BPF `memcpy` calls by the compiler.
 - `bench iograph-hook-floor` loaded the same skeleton and attached the empty
   raw tracepoint BPF floor row.
 - `bench iograph-compact-decision` and `bench iograph-compact-prefilter`

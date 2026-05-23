@@ -122,6 +122,8 @@ static __always_inline __u32 iograph_effective_probe_len(__u32 len)
 
 static __always_inline __u32 iograph_copy_selector(__u8 *dst, __u32 len)
 {
+	volatile __u8 *vdst = dst;
+	const volatile __u8 *vsrc = selector;
 	int i;
 
 	len = iograph_effective_probe_len(len);
@@ -129,7 +131,7 @@ static __always_inline __u32 iograph_copy_selector(__u8 *dst, __u32 len)
 	for (i = 0; i < IOGRAPH_BENCH_SELECTOR_CAP; i++) {
 		if ((__u32)i >= len)
 			break;
-		dst[i] = selector[i];
+		vdst[i] = vsrc[i];
 	}
 	return len;
 }
@@ -271,6 +273,8 @@ static __always_inline __u32
 iograph_lpm_bounded_action_from(const __u8 *src, __u32 len)
 {
 	struct iograph_lpm_key *key;
+	const volatile __u8 *vsrc = src;
+	volatile __u8 *vdst;
 	__u32 zero = 0;
 	__u32 *action;
 	int i;
@@ -279,11 +283,12 @@ iograph_lpm_bounded_action_from(const __u8 *src, __u32 len)
 	if (!key)
 		return 0;
 	key->prefixlen = len * 8u;
+	vdst = key->data;
 #pragma unroll
 	for (i = 0; i < IOGRAPH_BENCH_SELECTOR_CAP; i++) {
 		if ((__u32)i >= len)
 			break;
-		key->data[i] = src[i];
+		vdst[i] = vsrc[i];
 	}
 	action = bpf_map_lookup_elem(&lpm_policy, key);
 	return action ? *action : 0;
