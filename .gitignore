@@ -1,0 +1,10 @@
+tools/iog_bench/iog_bench
+tools/iog_bench/*.o
+tools/iog_bench/*.d
+tools/iogc/iogc
+tools/iogc/*.o
+tests/test_verify
+tests/test_interp
+tests/test_map
+tests/test_negative_blobs
+*.exe

@@ -1,0 +1,5 @@
+GPL-2.0-only
+
+Kernel prototype files use SPDX identifiers and are intended for Linux kernel
+prototype work. The userspace benchmark and support code in this repository are
+kept under the same license for now.
