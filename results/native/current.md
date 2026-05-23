@@ -10,6 +10,9 @@ as parallel sources of truth.
   `6.18.26.1-microsoft-standard-WSL2+ #2` kernel.
 - Kernel build shape: stock Microsoft WSL kernel configuration plus the
   io_graph overlay, built from a disposable Linux worktree.
+- Source validation shape: normal edit/build cycles use the incremental
+  overlay gate that builds only `kernel/bpf/iograph_map.o` and
+  `kernel/bpf/iograph_kfunc.o` through the patched Linux build system.
 - Benchmark path: Linux `tools/testing/selftests/bpf` `bench`, attached at
   `raw_tp/sys_enter` and triggered by repeated `getpgid` syscalls.
 - Policy input: compiled `iog_blob` artifacts from `iogc`.
@@ -73,8 +76,46 @@ They show the cost paid for POST events; DROP rows above return before reserve.
 | 800 | 840 | 1.658 +/- 0.017 | 603.14 | 1.807 +/- 0.018 | 553.40 |
 | 2048 | 2088 | 0.987 +/- 0.013 | 1013.17 | 1.024 +/- 0.030 | 976.56 |
 
+Weighted producer-side cost uses the 1000-prefix compact DROP row
+(173.25 ns/op) and the compact POST payload rows above. Ringbuf emission is
+only on the POST fraction.
+
+| drop_pct | payload_B | compact prefilter avg ns/op | always POST ns/op | speedup | emitted ringbuf_B/op | ringbuf reduction |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 300 | 317.68 | 387.45 | 1.22x | 172.00 | 2.00x |
+| 50 | 800 | 388.19 | 553.40 | 1.43x | 420.00 | 2.00x |
+| 50 | 2048 | 593.21 | 976.56 | 1.65x | 1044.00 | 2.00x |
+| 80 | 300 | 231.02 | 387.45 | 1.68x | 68.80 | 5.00x |
+| 80 | 800 | 259.23 | 553.40 | 2.13x | 168.00 | 5.00x |
+| 80 | 2048 | 341.23 | 976.56 | 2.86x | 417.60 | 5.00x |
+| 90 | 300 | 202.14 | 387.45 | 1.92x | 34.40 | 10.00x |
+| 90 | 800 | 216.24 | 553.40 | 2.56x | 84.00 | 10.00x |
+| 90 | 2048 | 257.24 | 976.56 | 3.80x | 208.80 | 10.00x |
+| 95 | 300 | 187.69 | 387.45 | 2.06x | 17.20 | 20.00x |
+| 95 | 800 | 194.74 | 553.40 | 2.84x | 42.00 | 20.00x |
+| 95 | 2048 | 215.25 | 976.56 | 4.54x | 104.40 | 20.00x |
+| 99 | 300 | 176.14 | 387.45 | 2.20x | 3.44 | 100.00x |
+| 99 | 800 | 177.55 | 553.40 | 3.12x | 8.40 | 100.00x |
+| 99 | 2048 | 181.65 | 976.56 | 5.38x | 20.88 | 100.00x |
+
+Break-even DROP rate is low because POST rows pay normal reserve/copy work
+while DROP rows return before reserve:
+
+| payload_B | break-even DROP rate |
+|---:|---:|
+| 300 | 25.8% |
+| 800 | 11.6% |
+| 2048 | 4.4% |
+
 ## Validation Notes
 
+- The latest source overlay is validated with the incremental object gate:
+  `scripts/build_linux_overlay_minimal.sh` builds `kernel/bpf/iograph_map.o`
+  and `kernel/bpf/iograph_kfunc.o` through the patched Linux build system
+  without a full kernel rebuild.
+- A refreshed selftests bench run still requires booting the patched 6.18 WSL
+  kernel. A stock WSL kernel can expose BTF, but it does not contain the
+  experimental io_graph map type and kfuncs needed by the BPF skeleton.
 - `bench iograph-hook-floor` loaded the same skeleton and attached the empty
   raw tracepoint BPF floor row.
 - `bench iograph-compact-decision` and `bench iograph-compact-prefilter`
@@ -88,6 +129,10 @@ They show the cost paid for POST events; DROP rows above return before reserve.
   materialization.
 - `bench iograph-compact-post-payload` and `bench iograph-ringbuf-always-post`
   measured POST-side payload materialization with a ringbuf consumer.
+- `bench iograph-compact-acquire-decision`,
+  `bench iograph-lpm-bounded-acquire-decision`, and
+  `bench iograph-discard-after-reserve` are now in the bench source for the
+  next kernel run; the table above does not include those unrefreshed rows yet.
 - The compact prefilter DROP row returned before `bpf_ringbuf_reserve()`, so
   rejected events contributed 0 ringbuf bytes in this bench path.
 - The WSL environment exposes no CPU PMU device. Branch/cache/L1/LLC

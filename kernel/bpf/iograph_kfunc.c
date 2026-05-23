@@ -91,7 +91,7 @@ iograph_entry_state(const struct bpf_iograph_graph *graph, u32 entry_id,
 		return 0;
 	}
 
-	for (i = 0; i < graph->hdr->entry_cnt; i++) {
+	for (i = 0; i < graph->entry_cnt; i++) {
 		if (graph->entries[i].id == entry_id) {
 			*state = graph->entries[i].state;
 			return 0;
@@ -143,7 +143,7 @@ iograph_compact_entry_state(const struct bpf_iograph_graph *graph,
 		return 0;
 	}
 
-	for (i = 0; i < graph->hdr->entry_cnt; i++) {
+	for (i = 0; i < graph->compact_entry_cnt; i++) {
 		if (graph->compact_entries[i].id == entry_id) {
 			*state = graph->compact_entries[i].state;
 			return 0;
@@ -263,7 +263,7 @@ __bpf_kfunc int bpf_iograph_run(struct bpf_map *map, const u8 *buf,
 	imap = container_of(map, struct bpf_iograph_map, map);
 	rcu_read_lock();
 	graph = iograph_active_graph(imap);
-	if (!graph)
+	if (!graph || !graph->hdr)
 		goto out;
 	if (len > graph->max_input_len) {
 		ret = -E2BIG;
@@ -318,7 +318,7 @@ __bpf_kfunc u32 bpf_iograph_step(struct bpf_map *map, u32 state, u32 sym)
 	imap = container_of(map, struct bpf_iograph_map, map);
 	rcu_read_lock();
 	graph = iograph_active_graph(imap);
-	if (!graph || state >= graph->hdr->node_cnt)
+	if (!graph || !graph->hdr || state >= graph->node_cnt)
 		goto out;
 
 	next = iograph_step_state(graph, state, (u8)sym);

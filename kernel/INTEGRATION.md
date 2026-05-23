@@ -40,6 +40,51 @@ Commit the overlay inside the disposable Linux worktree as a measurement
 checkpoint before building. That commit is for reproducibility, not an upstream
 submission.
 
+## Incremental Build Gate
+
+Do not use a full kernel build as the default validation loop. After applying
+the overlay, first build only the io_graph kernel objects:
+
+```sh
+sh scripts/build_linux_overlay_minimal.sh \
+	/path/to/wsl2-linux-iograph \
+	/path/to/build/wsl2-iograph
+```
+
+That command runs:
+
+```sh
+make -C /path/to/wsl2-linux-iograph O=/path/to/build/wsl2-iograph \
+	kernel/bpf/iograph_map.o kernel/bpf/iograph_kfunc.o
+```
+
+It validates the map/kfunc translation units and the patched kernel build
+plumbing without relinking `vmlinux`, producing `bzImage`, installing modules,
+or touching WSL boot configuration. Use it for normal edit/build cycles.
+The script honors `MAKE` and `JOBS`, so NixOS or other thin build shells can
+point at an existing kernel-build toolchain without changing the source tree:
+
+```sh
+MAKE=/path/to/make JOBS=8 sh scripts/build_linux_overlay_minimal.sh \
+	/path/to/wsl2-linux-iograph \
+	/path/to/build/wsl2-iograph
+```
+
+When the object gate passes and the booted kernel already exposes the io_graph
+UAPI/kfuncs, optionally build only the Linux selftests bench binary:
+
+```sh
+sh scripts/build_linux_overlay_minimal.sh --selftests-bench \
+	/path/to/wsl2-linux-iograph \
+	/path/to/build/wsl2-iograph \
+	/path/to/build/wsl2-iograph-selftests
+```
+
+The selftests bench build is still much smaller than a kernel rebuild, but it
+generates BPF skeletons from the running kernel BTF. A stock WSL kernel without
+`BPF_MAP_TYPE_IOGRAPH` can compile host-side pieces but is expected to fail the
+BPF skeleton stage.
+
 Plumb the map type through:
 
 - `include/uapi/linux/bpf.h` enum `bpf_map_type`;

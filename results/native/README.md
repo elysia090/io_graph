@@ -27,6 +27,33 @@ only to a disposable clean worktree or disposable clone. The script refuses a
 dirty tree, checks `kernel/linux.integration.patch` before copying overlay
 files, applies the patch, and then runs `git diff --check`.
 
+Use the incremental overlay build gate before any boot-image work:
+
+```sh
+sh scripts/build_linux_overlay_minimal.sh \
+	/path/to/wsl2-linux-iograph \
+	/path/to/build/wsl2-iograph
+```
+
+This builds only `kernel/bpf/iograph_map.o` and
+`kernel/bpf/iograph_kfunc.o` through the patched Linux build system. It is the
+normal edit/build validation loop. It intentionally does not build `bzImage`,
+install modules, edit `.wslconfig`, or reboot WSL.
+The script honors `MAKE` and `JOBS`; on NixOS WSL, enter the kernel build shell
+or point `MAKE`/`PATH` at the existing Nix store toolchain instead of falling
+back to a full kernel build.
+
+When the object gate passes and the running kernel already contains the
+io_graph UAPI/kfuncs, the same script can build the Linux selftests bench
+without a full kernel rebuild:
+
+```sh
+sh scripts/build_linux_overlay_minimal.sh --selftests-bench \
+	/path/to/wsl2-linux-iograph \
+	/path/to/build/wsl2-iograph \
+	/path/to/build/wsl2-iograph-selftests
+```
+
 WSL `.wslconfig` is a global WSL2 VM setting. A custom kernel configured there
 affects every WSL2 distribution, not only the shell used to build or run the
 benchmark. Store boot artifacts and config snippets separately, switch them

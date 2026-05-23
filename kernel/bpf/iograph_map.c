@@ -26,7 +26,7 @@
 
 #include "iograph_internal.h"
 
-#define IOG_CREATE_FLAG_MASK	BPF_F_NUMA_NODE
+#define IOG_CREATE_FLAG_MASK	(BPF_F_NUMA_NODE | BPF_F_IOGRAPH_ACTION_ONLY)
 
 static bool iog_u32_array_fits(u32 total, u32 off, u32 cnt, size_t elem_sz)
 {
@@ -357,14 +357,32 @@ static void iograph_compact_free(struct bpf_iograph_graph *graph)
 	if (!graph)
 		return;
 
-	kvfree(graph->compact_entries);
-	kvfree(graph->compact_nodes);
-	kvfree(graph->compact_edges);
-	kvfree(graph->compact_lits);
+	kvfree(graph->compact_data);
+	graph->compact_data = NULL;
 	graph->compact_entries = NULL;
 	graph->compact_nodes = NULL;
 	graph->compact_edges = NULL;
 	graph->compact_lits = NULL;
+	graph->compact_mem_bytes = 0;
+}
+
+static bool iograph_compact_add_section(size_t *off, size_t align,
+					u32 cnt, size_t elem_sz,
+					size_t *section_off)
+{
+	size_t aligned = ALIGN(*off, align);
+	size_t bytes, next;
+
+	if (aligned < *off)
+		return false;
+	if (check_mul_overflow((size_t)cnt, elem_sz, &bytes))
+		return false;
+	if (check_add_overflow(aligned, bytes, &next))
+		return false;
+
+	*section_off = aligned;
+	*off = next;
+	return true;
 }
 
 static int iograph_compact_alloc_arrays(struct bpf_iograph_graph *graph,
@@ -372,38 +390,48 @@ static int iograph_compact_alloc_arrays(struct bpf_iograph_graph *graph,
 					u32 lit_len)
 {
 	u32 entry_cnt = graph->hdr->entry_cnt;
+	size_t entries_off = 0, nodes_off = 0, edges_off = 0, lits_off = 0;
+	size_t total = 0;
+	u8 *data;
 
-	if (entry_cnt) {
-		graph->compact_entries = kvcalloc(entry_cnt,
-						  sizeof(*graph->compact_entries),
-						  GFP_KERNEL_ACCOUNT);
-		if (!graph->compact_entries)
-			return -ENOMEM;
-	}
+	if (!iograph_compact_add_section(&total,
+					 __alignof__(struct iog_entry),
+					 entry_cnt,
+					 sizeof(*graph->compact_entries),
+					 &entries_off) ||
+	    !iograph_compact_add_section(&total,
+					 __alignof__(struct bpf_iograph_cnode),
+					 node_cnt,
+					 sizeof(*graph->compact_nodes),
+					 &nodes_off) ||
+	    !iograph_compact_add_section(&total,
+					 __alignof__(struct bpf_iograph_cedge),
+					 edge_cnt,
+					 sizeof(*graph->compact_edges),
+					 &edges_off) ||
+	    !iograph_compact_add_section(&total, __alignof__(u8), lit_len,
+					 sizeof(*graph->compact_lits),
+					 &lits_off))
+		return -E2BIG;
 
-	graph->compact_nodes = kvcalloc(node_cnt,
-					sizeof(*graph->compact_nodes),
-					GFP_KERNEL_ACCOUNT);
-	if (!graph->compact_nodes)
+	data = kvzalloc(total, GFP_KERNEL_ACCOUNT);
+	if (!data)
 		return -ENOMEM;
 
-	if (edge_cnt) {
-		graph->compact_edges = kvcalloc(edge_cnt,
-						sizeof(*graph->compact_edges),
-						GFP_KERNEL_ACCOUNT);
-		if (!graph->compact_edges)
-			return -ENOMEM;
-	}
-
-	if (lit_len) {
-		graph->compact_lits = kvmalloc(lit_len, GFP_KERNEL_ACCOUNT);
-		if (!graph->compact_lits)
-			return -ENOMEM;
-	}
-
+	graph->compact_data = data;
+	graph->compact_entries = entry_cnt ?
+				 (struct iog_entry *)(data + entries_off) :
+				 NULL;
+	graph->compact_nodes = (struct bpf_iograph_cnode *)(data + nodes_off);
+	graph->compact_edges = edge_cnt ?
+			       (struct bpf_iograph_cedge *)(data + edges_off) :
+			       NULL;
+	graph->compact_lits = lit_len ? data + lits_off : NULL;
+	graph->compact_entry_cnt = entry_cnt;
 	graph->compact_node_cnt = node_cnt;
 	graph->compact_edge_cnt = edge_cnt;
 	graph->compact_lit_len = lit_len;
+	graph->compact_mem_bytes = total;
 	return 0;
 }
 
@@ -527,12 +555,28 @@ static void iograph_graph_free(struct bpf_iograph_graph *graph)
 		return;
 
 	iograph_compact_free(graph);
+	kvfree(graph->blob);
 	kvfree(graph);
+}
+
+static void iograph_graph_drop_blob(struct bpf_iograph_graph *graph)
+{
+	kvfree(graph->blob);
+	graph->blob = NULL;
+	graph->blob_len = 0;
+	graph->hdr = NULL;
+	graph->nodes = NULL;
+	graph->edges = NULL;
+	graph->entries = NULL;
+	graph->accepts = NULL;
+	graph->node_cnt = 0;
+	graph->entry_cnt = 0;
 }
 
 static struct bpf_iograph_graph *iograph_graph_alloc(const void *value,
 						     u32 value_size,
-						     int numa_node)
+						     int numa_node,
+						     bool action_only)
 {
 	struct bpf_iograph_graph *graph;
 	u32 blob_len;
@@ -542,10 +586,15 @@ static struct bpf_iograph_graph *iograph_graph_alloc(const void *value,
 	if (ret)
 		return ERR_PTR(ret);
 
-	graph = kvzalloc_node(struct_size(graph, blob, blob_len),
-			      GFP_KERNEL_ACCOUNT, numa_node);
+	graph = kvzalloc_node(sizeof(*graph), GFP_KERNEL_ACCOUNT, numa_node);
 	if (!graph)
 		return ERR_PTR(-ENOMEM);
+
+	graph->blob = kvmalloc(blob_len, GFP_KERNEL_ACCOUNT);
+	if (!graph->blob) {
+		kvfree(graph);
+		return ERR_PTR(-ENOMEM);
+	}
 
 	memcpy(graph->blob, value, blob_len);
 	graph->blob_len = blob_len;
@@ -554,6 +603,8 @@ static struct bpf_iograph_graph *iograph_graph_alloc(const void *value,
 	graph->edges = (const void *)(graph->blob + graph->hdr->edges_off);
 	graph->entries = (const void *)(graph->blob + graph->hdr->entries_off);
 	graph->accepts = (const void *)(graph->blob + graph->hdr->accepts_off);
+	graph->node_cnt = graph->hdr->node_cnt;
+	graph->entry_cnt = graph->hdr->entry_cnt;
 	graph->max_input_len = graph->hdr->max_input_len;
 	iograph_graph_inline_accept_codes(graph);
 	if (graph->hdr->entry_cnt == 1) {
@@ -566,6 +617,8 @@ static struct bpf_iograph_graph *iograph_graph_alloc(const void *value,
 		iograph_graph_free(graph);
 		return ERR_PTR(ret);
 	}
+	if (action_only)
+		iograph_graph_drop_blob(graph);
 	return graph;
 }
 
@@ -642,7 +695,8 @@ static long iograph_map_update_elem(struct bpf_map *map, void *key,
 		return -EINVAL;
 
 	imap = container_of(map, struct bpf_iograph_map, map);
-	new_graph = iograph_graph_alloc(value, map->value_size, map->numa_node);
+	new_graph = iograph_graph_alloc(value, map->value_size, map->numa_node,
+					map->map_flags & BPF_F_IOGRAPH_ACTION_ONLY);
 	if (IS_ERR(new_graph))
 		return PTR_ERR(new_graph);
 
@@ -718,14 +772,9 @@ static u64 iograph_map_mem_usage(const struct bpf_map *map)
 	rcu_read_lock();
 	graph = rcu_dereference(imap->graph);
 	if (graph) {
-		usage += struct_size(graph, blob, graph->blob_len);
-		usage += (u64)graph->hdr->entry_cnt *
-			 sizeof(*graph->compact_entries);
-		usage += (u64)graph->compact_node_cnt *
-			 sizeof(*graph->compact_nodes);
-		usage += (u64)graph->compact_edge_cnt *
-			 sizeof(*graph->compact_edges);
-		usage += graph->compact_lit_len;
+		usage += sizeof(*graph);
+		usage += graph->blob_len;
+		usage += graph->compact_mem_bytes;
 	}
 	rcu_read_unlock();
 

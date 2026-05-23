@@ -12,7 +12,7 @@ The active result track is the kernel prototype:
 | interpreter | required non-JIT execution path; `run_action()` uses the compact runtime graph, `run()`/`step()` keep the byte-trie diagnostic paths | `kernel/bpf/iograph_kfunc.c` |
 | kfunc API | action-only prefilter kfunc plus run/step observation paths; kfuncs hold short internal RCU read sections and are available to the raw-tracepoint bench path | `kernel/bpf/iograph_kfunc.c` |
 | selftest | bad blob update rejection plus DROP-before-ringbuf-reserve path | `kernel/selftests/bpf/` |
-| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit; LPM has full-key and bounded-copy rows | `kernel/selftests/bpf/benchs/bench_iograph.c` |
+| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit; LPM has full-key, bounded-copy, and bounded-acquisition rows | `kernel/selftests/bpf/benchs/bench_iograph.c` |
 | pre-ringbuf path | BPF program calls `bpf_iograph_run_action()` before reserve | `bpf/prefilter_demo.bpf.c` |
 | compact runtime | userspace and kernel map-publication single-child chain compression; refreshed kernel rows now beat the same-hook LPM baseline on matched prefix paths | `src/iog_compact.c`, `kernel/bpf/iograph_map.c`, `results/native/current.md` |
 
@@ -68,7 +68,7 @@ Current kernel evidence:
 | Validation | Current status | Evidence |
 |:---|:---|:---|
 | Linux source overlay | map, kfunc, UAPI, selftest, and bench slices copy into Linux source layout | `scripts/apply_linux_overlay.sh` |
-| kernel object build | `kernel/bpf/iograph_map.o` and `kernel/bpf/iograph_kfunc.o` compile in a Linux tree with the integration patch applied | `results/native/current.md` |
+| incremental kernel object build | `kernel/bpf/iograph_map.o` and `kernel/bpf/iograph_kfunc.o` compile through the patched Linux build system without a full kernel rebuild | `scripts/build_linux_overlay_minimal.sh`, `results/native/current.md` |
 | selftests bench path | patched Linux selftests bench loads the same-hook floor, 100/1000 io_graph decision and DROP rows, full-key and bounded-copy LPM rows, and POST payload rows | `results/native/current.md` |
 | PMU gating | the observed WSL runtime exposes no CPU PMU device, so branch/cache counters must be collected on a PMU-visible native host or VM | `results/native/current.md` |
 
@@ -91,6 +91,12 @@ ringbuf consumer:
 | 800 | 603.14 | 553.40 |
 | 2048 | 1013.17 | 976.56 |
 
+Weighted with the 1000-prefix compact DROP row, the same kernel producer path
+breaks even at 25.8% DROP for 300 B records, 11.6% DROP for 800 B records, and
+4.4% DROP for 2048 B records. At 95% DROP the producer-side averages are
+187.69 ns/op, 194.74 ns/op, and 215.25 ns/op respectively, while emitted
+ringbuf bytes fall by 20x.
+
 Required kernel matrix:
 
 - map create/update/delete verification results;
@@ -101,6 +107,9 @@ Required kernel matrix:
 - BPF verifier load time and BPF JIT time for baselines;
 - update latency without BPF program reload;
 - ringbuf bytes emitted and reserve/drop counts for the prefilter demo;
+- selector-acquisition rows from `iograph-compact-acquire-decision` and
+  `iograph-lpm-bounded-acquire-decision`;
+- reserve/discard comparison from `iograph-discard-after-reserve`;
 - `perf stat` or `perf_event_open` branch/cache counters when the native PMU
   exposes them.
 

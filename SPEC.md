@@ -1240,7 +1240,7 @@ verify the byte-trie blob, build the compact runtime graph, then discard the
 copied source blob from the active object. `run_action()` continues to work
 from compact runtime data; `run()` and `step()` are unavailable or return a
 diagnostic error. This is implemented in the userspace BPF-shaped harness and
-is a candidate map flag for the kernel prototype.
+the kernel prototype map flag `BPF_F_IOGRAPH_ACTION_ONLY`.
 
 Observed userspace memory effect:
 
@@ -1265,18 +1265,23 @@ struct bpf_iograph_graph {
 
     /* retained source blob and byte-trie diagnostic views */
     u32 blob_len;
+    u32 node_cnt;
+    u32 entry_cnt;
     const struct iog_blob_hdr *hdr;
     const struct iog_node *nodes;
     const struct iog_edge *edges;
     const struct iog_entry *entries;
     const struct iog_accept *accepts;
+    u8 *blob;
 
     /* hot action runtime */
     u32 max_input_len;
     bool single_entry;
     u32 single_entry_id;
     u32 compact_single_entry_state;
-    struct bpf_iograph_centry *compact_entries;
+    u32 compact_entry_cnt;
+    void *compact_data;
+    struct iog_entry *compact_entries;
     struct bpf_iograph_cnode *compact_nodes;
     struct bpf_iograph_cedge *compact_edges;
     u8 *compact_lits;
@@ -1287,14 +1292,15 @@ struct bpf_iograph_graph {
     u32 compact_lit_len;
     u32 compact_literal_edge_cnt;
     u32 compact_max_literal_len;
-
-    u8 blob[];
+    u64 compact_mem_bytes;
 };
 
 The retained byte-trie blob is the verifier-facing artifact and diagnostic
-runtime. The compact arrays are the action hot path. Future JIT images, if
-added, are attached to the immutable graph object but are not required by the
-validated prefix-filtering v0.
+runtime. The contiguous compact runtime block is the action hot path. In
+action-only mode the retained blob pointers are cleared after compact
+publication, while compact entries/nodes/edges/literal tails remain executable.
+Future JIT images, if added, are attached to the immutable graph object but are
+not required by the validated prefix-filtering v0.
 
 Run path must not allocate.
 

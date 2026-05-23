@@ -42,25 +42,30 @@ struct bpf_iograph_graph {
 	struct rcu_head rcu;
 	u32 blob_len;
 	u32 max_input_len;
+	u32 node_cnt;
+	u32 entry_cnt;
 	u32 single_entry_id;
 	u32 single_entry_state;
 	u32 compact_single_entry_state;
+	u32 compact_entry_cnt;
 	u32 compact_node_cnt;
 	u32 compact_edge_cnt;
 	u32 compact_lit_len;
 	u32 compact_literal_edge_cnt;
 	u32 compact_max_literal_len;
+	u64 compact_mem_bytes;
 	bool single_entry;
 	const struct iog_blob_hdr *hdr;
 	const struct iog_node *nodes;
 	const struct iog_edge *edges;
 	const struct iog_entry *entries;
 	const struct iog_accept *accepts;
+	u8 *blob;
+	void *compact_data;
 	struct iog_entry *compact_entries;
 	struct bpf_iograph_cnode *compact_nodes;
 	struct bpf_iograph_cedge *compact_edges;
 	u8 *compact_lits;
-	u8 blob[];
 };
 
 struct bpf_iograph_map {

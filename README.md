@@ -30,6 +30,12 @@ Native Linux validation entrypoint:
 make validate-native
 ```
 
+Linux overlay edit/build loop:
+
+```sh
+sh scripts/build_linux_overlay_minimal.sh /path/to/linux /path/to/build
+```
+
 Start with [SPEC.md](SPEC.md), [kernel/README.md](kernel/README.md), and
 [docs/RESULTS.md](docs/RESULTS.md). Benchmark methodology is in
 [docs/BENCHMARKING.md](docs/BENCHMARKING.md); source-code precedents and kernel
