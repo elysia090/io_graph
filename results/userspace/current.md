@@ -62,6 +62,9 @@ single-child byte chains into literal-run edges. Raw result files:
 
 PMU counters were still unavailable in this WSL run, so branch/L1/LLC columns
 remain `na`; rdtsc cycles and p95/p99/p999 batch timings were recorded.
+The current publication-shaped compact shim and update/memory split are tracked
+in `results/userspace/compact-runtime-2026-05-23.md`; older rows below are kept
+as the frozen proof snapshot unless a section says otherwise.
 
 ### Compact Runtime Size
 
@@ -106,7 +109,18 @@ compact edge advances for compact rows.
 
 ## Memory Overhead
 
-The map update rows report active graph object memory, not only artifact bytes.
+This frozen proof snapshot predates compact runtime publication in the
+userspace shim. It reports the byte-trie graph object memory, not the current
+published compact graph memory. The current split is:
+
+```text
+source blob bytes
++ compact runtime bytes
++ graph/map container overhead
+```
+
+See `results/userspace/compact-runtime-2026-05-23.md` for the current
+`active_blob_B`, `active_compact_B`, and `active_total_B` rows.
 
 | prefixes | iog_blob_B | active_mem_B | active_over_blob_B |
 |---:|---:|---:|---:|
@@ -136,10 +150,12 @@ single-edge fast path before any JIT work.
 
 ## BPF Map Update
 
-The measured run path uses `iog_map_run_action()`. The update path copies the
-blob, verifies it, builds an immutable graph object, publishes it, and retires
-the old object. Reclaim is reported separately to keep post-RCU-grace-period
-freeing out of policy activation latency.
+This table is the byte-trie publication snapshot. The current map update path
+also builds the compact runtime graph before publication, and the update table
+now reports `compact_build_us`, `active_blob_B`, `active_compact_B`, and
+`active_total_B` in `results/userspace/compact-runtime-2026-05-23.md`.
+Reclaim remains reported separately to keep post-RCU-grace-period freeing out
+of policy activation latency.
 
 | prefixes | verify_us | map_update_us | update_iters | active_mem_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -201,8 +217,11 @@ the p95/p99/p999 columns.
 
 ## BPF Event Path
 
-This table runs the graph before materialization and only copies a record for
-POST. DROP rows emit 0 ringbuf bytes per event.
+This frozen row predates the compact shim alignment. The current event-path
+table printed by `tools/iog_bench/iog_bench` is named
+`bpf event path (compact run_action shim)`: it runs the published compact graph
+before materialization and only copies a record for POST. DROP rows emit
+0 ringbuf bytes per event.
 
 | prefixes | case | payload_B | ns/op | cycles/op | emitted_ringbuf_B/op | reserve_fail/op | run_allocs |
 |---:|:---|---:|---:|---:|---:|---:|---:|

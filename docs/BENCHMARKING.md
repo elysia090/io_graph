@@ -29,15 +29,19 @@ The `io_graph` path changes the execution order:
 For DROP, the benchmark reports 0 ringbuf bytes and no decoded userspace event.
 The avoided intermediate object is `ringbuf_record(payload) + decoded_event`.
 The benchmark runs the decision through the BPF map operations harness. The
-`bpf event path` table executes the order directly: negative rows run the graph
-and skip record construction, while positive rows copy one aligned BPF ringbuf
-record including its 8-byte header.
+userspace shim now mirrors kernel publication: map update verifies and copies
+the byte-trie blob, inlines accept codes, builds the compact runtime graph, and
+`bpf_iograph_run_action` semantics use that published compact graph. The
+`bpf event path` table executes the order directly: negative rows run the
+compact graph and skip record construction, while positive rows copy one
+aligned BPF ringbuf record including its 8-byte header.
 
 ## Implemented paths
 
 The C benchmark compares:
 
-- `io_graph` prefilter before payload materialization;
+- `io_graph` byte-trie interpreter primitive before payload materialization;
+- `io_graph_compact_chain`, the published compact `run_action()` primitive;
 - ringbuf-then-userspace-drop, accounted as record materialization plus decode
   for every event, followed by userspace list-prefix evaluation;
 - generated string-compare chain, implemented as repeated byte compares with a BPF
@@ -66,10 +70,10 @@ microbenchmark:
 | Row | Attach/trigger | Policy bytes | Payload |
 |:---|:---|:---|:---|
 | `decision cost` | direct C call | prebuilt selector samples | none |
-| `bpf event path` | userspace BPF-shaped model | prebuilt selector samples | POST copies 300 B, 800 B, or 2 KiB |
+| `bpf event path` | userspace BPF-shaped model | prebuilt selector samples | compact `run_action()` first; POST copies 300 B, 800 B, or 2 KiB |
 | `iograph-hook-floor` | `raw_tp/sys_enter`, triggered by `getpgid` | none | no graph lookup, batched host trigger counter |
-| `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; after compact publication this is the compact `run_action()` path |
-| `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; compact name is the explicit current row |
+| `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; both names use the current compact `run_action()` path after publication |
+| `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; both names use the current compact runtime, and the compact name is the explicit current row |
 | `iograph-lpm-decision` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | action only, batched host trigger counter |
 | `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | current kernel bench event is small |
 
@@ -152,10 +156,13 @@ The copied userspace and kernel graph objects inline accept codes after blob
 verification by rewriting each runtime node's accepted ID into the action code.
 The verified source blob format still carries `accept_id -> accept_code`, but
 the run path does not need an `accepts[]` lookup on every accepting node.
-The kernel publication path then derives a compact runtime graph for the
-action-only prefilter path: single-child byte chains become literal-run edges,
-while range edges, accepting nodes, final-action nodes, entry states, and
-consuming else transitions remain explicit graph nodes.
+Userspace map publication and kernel map publication then derive a compact
+runtime graph for the action-only prefilter path: single-child byte chains
+become literal-run edges, while range edges, accepting nodes, final-action
+nodes, entry states, and consuming else transitions remain explicit graph
+nodes. The byte-trie matcher remains in the benchmark as
+`io_graph_byte_trie`; it is a primitive comparison row, not the current
+BPF-shaped event path.
 Accepting leaf nodes are emitted with `IOG_NODE_F_FINAL_ACTION`, which lets the
 last-accept action walker return early without changing longest-match
 semantics for nodes that still have outgoing override edges.

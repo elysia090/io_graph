@@ -31,12 +31,18 @@ Current kernel-side v0 coverage:
   the run path;
 - graph publication also builds a runtime-only compact graph from the verified
   byte-trie blob by folding single-child byte chains into literal-run edges;
+- compact runtime build is part of publication: if allocation or construction
+  fails, the update fails before RCU publication and the old graph remains
+  active;
 - `bpf_iograph_run_action()` uses the compact runtime graph, while
   `bpf_iograph_run()` and `bpf_iograph_step()` keep the byte-trie path for
   validation, final-state observation, and single-step diagnostics;
 - accepting leaf nodes carry `IOG_NODE_F_FINAL_ACTION`, letting `run_action`
   return at a final prefix without changing longest-match semantics for
   accepting nodes that still have outgoing edges;
+- `IOG_NODE_F_FINAL_ACTION` is a producer-declared semantic flag: the verifier
+  checks that it is attached to an accepting node, but it does not prove a
+  global "no longer override exists" property for arbitrary graph producers;
 - `default_dst` is v0's consuming else transition, not a non-consuming fallback
   chain;
 - BPF kfunc reads reuse the BPF program's existing RCU read-side protection
@@ -55,6 +61,9 @@ Current kernel-side v0 coverage:
   graph object for the common prefilter entry path;
 - map memory accounting includes the copied blob plus compact entries, compact
   nodes, compact edges, and literal bytes;
+- compact arrays currently use normal accounted kernel allocation in the
+  prototype; if `BPF_F_NUMA_NODE` becomes relevant for placement, the compact
+  arrays should be allocated node-aware alongside the graph object;
 - `bpf_iograph_run()` keeps final-state output for validation and debugging;
 - `bpf_iograph_step()` exposes one verified transition;
 - kfunc registration covers the tracing selftest path and the raw tracepoint

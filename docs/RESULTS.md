@@ -41,9 +41,12 @@ in `results/native/current.md`. The userspace primitive now emits batch
 p95/p99/p999 rows, 10000-prefix memory/update rows, and compact-chain runtime
 rows in `results/userspace/current.md`.
 The current compact-runtime follow-up for the kernel publication shape is in
-`results/userspace/compact-runtime-2026-05-23.md`; it shows typical 100-prefix
-hits at 33.32 ns and typical 1000-prefix hits at 45.44 ns on the compact graph
-in the same WSL userspace environment.
+`results/userspace/compact-runtime-2026-05-23.md`; after aligning the
+userspace BPF-shaped shim with the published compact graph, it shows typical
+100-prefix hits at 35.35 ns and typical 1000-prefix hits at 59.84 ns in the
+same WSL userspace environment. The older 33.32 ns / 45.44 ns rows in that
+file are preserved as direct compact-primitive tail snapshots and bypass the
+published map-object boundary.
 
 Current kernel evidence:
 

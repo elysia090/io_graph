@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static u64 cgraph_mem_bytes(const struct iog_cgraph *cg)
+u64 iog_cgraph_mem_bytes(const struct iog_cgraph *cg)
 {
 	if (!cg)
 		return 0;
@@ -506,7 +506,7 @@ int iog_cgraph_stats(const struct iog_cgraph *cg,
 	stats->nodes = cg->node_cnt;
 	stats->edges = cg->edge_cnt;
 	stats->literal_bytes = cg->lit_len;
-	stats->mem_bytes = cgraph_mem_bytes(cg);
+	stats->mem_bytes = iog_cgraph_mem_bytes(cg);
 
 	for (i = 0; i < cg->edge_cnt; i++) {
 		const struct iog_cedge *edge = &cg->edges[i];

@@ -1,5 +1,7 @@
 #include "iog_internal.h"
 
+#include <iog/compact.h>
+
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -81,12 +83,16 @@ u32 iog_map_reclaim(struct iog_map *map)
 
 u32 iog_map_run_action(const struct iog_map *map, const u8 *buf, u32 len)
 {
-	const struct iog_graph_obj *obj = map->graph;
+	const struct iog_graph_obj *obj;
 
+	if (!map)
+		return 0;
+
+	obj = map->graph;
 	if (unlikely(!obj))
 		return 0;
 
-	return iog_run_action(&obj->graph, buf, len);
+	return iog_cgraph_run_action(obj->compact, buf, len);
 }
 
 int iog_map_layout_stats(const struct iog_map *map,
@@ -114,7 +120,8 @@ const struct iog_graph *iog_map_active_graph(const struct iog_map *map)
 
 static u64 iog_graph_obj_mem_usage(const struct iog_graph_obj *obj)
 {
-	return obj ? sizeof(*obj) + obj->blob_len : 0;
+	return obj ? sizeof(*obj) + obj->blob_len +
+		     iog_cgraph_mem_bytes(obj->compact) : 0;
 }
 
 u64 iog_map_active_mem_usage(const struct iog_map *map)
@@ -273,16 +280,16 @@ int iog_bpf_kfunc_step(const struct iog_bpf_map *map, u32 state, u32 sym,
 u32 iog_bpf_kfunc_run_action(const struct iog_bpf_map *map, const u8 *buf,
 			     u32 len, u32 entry_id)
 {
-	const struct iog_graph *graph;
+	const struct iog_graph_obj *obj;
 
 	if (!map)
 		return 0;
 
-	graph = iog_map_active_graph(&map->map);
-	if (!graph)
+	obj = map->map.graph;
+	if (!obj)
 		return 0;
 
-	return iog_run_action_entry(graph, buf, len, entry_id);
+	return iog_cgraph_run_action_entry(obj->compact, buf, len, entry_id);
 }
 
 int iog_bpf_kfunc_run(const struct iog_bpf_map *map, const u8 *buf, u32 len,

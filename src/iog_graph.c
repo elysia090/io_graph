@@ -1,5 +1,7 @@
 #include "iog_internal.h"
 
+#include <iog/compact.h>
+
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,6 +71,11 @@ int iog_graph_obj_new(const void *blob, size_t len,
 		iog_graph_obj_free(obj);
 		return ret;
 	}
+	ret = iog_cgraph_new(&obj->graph, &obj->compact);
+	if (ret) {
+		iog_graph_obj_free(obj);
+		return ret;
+	}
 
 	*obj_out = obj;
 	return 0;
@@ -100,6 +107,7 @@ void iog_graph_obj_free(struct iog_graph_obj *obj)
 	if (!obj)
 		return;
 
+	iog_cgraph_free(obj->compact);
 	free(obj->blob);
 	free(obj);
 }

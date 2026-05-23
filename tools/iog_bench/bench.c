@@ -69,8 +69,11 @@ struct payload_result {
 
 struct update_result {
 	double verify_us;
+	double compact_build_us;
 	double update_us;
 	double reclaim_us;
+	u64 active_blob_bytes;
+	u64 active_compact_bytes;
 	u64 active_mem_bytes;
 	u64 retired_mem_bytes;
 	u64 total_mem_bytes;
@@ -783,8 +786,11 @@ static struct update_result bench_update(const void *blob, size_t blob_len,
 					 u64 iterations)
 {
 	struct update_result result;
+	struct iog_cgraph *compact = NULL;
+	struct iog_graph graph;
 	struct iog_map map;
 	u64 start_ns, end_ns, reclaim_start_ns, reclaim_end_ns;
+	void *copy;
 	u64 i;
 	char err[256];
 	int ret;
@@ -802,6 +808,36 @@ static struct update_result bench_update(const void *blob, size_t blob_len,
 	}
 	result.verify_us = (double)(end_ns - start_ns) / 1000.0;
 
+	copy = malloc(blob_len);
+	if (!copy) {
+		perror("malloc");
+		exit(2);
+	}
+	memcpy(copy, blob, blob_len);
+	ret = iog_graph_from_blob(&graph, copy, blob_len, &iog_default_limits,
+				  err, sizeof(err));
+	if (ret) {
+		fprintf(stderr, "graph load failed in update bench: %s\n", err);
+		exit(1);
+	}
+	ret = iog_graph_inline_accept_codes(&graph);
+	if (ret) {
+		fprintf(stderr, "accept inline failed in update bench: %d\n",
+			ret);
+		exit(1);
+	}
+	start_ns = nsec_now();
+	ret = iog_cgraph_new(&graph, &compact);
+	end_ns = nsec_now();
+	if (ret) {
+		fprintf(stderr, "compact build failed in update bench: %d\n",
+			ret);
+		exit(1);
+	}
+	result.compact_build_us = (double)(end_ns - start_ns) / 1000.0;
+	iog_cgraph_free(compact);
+	free(copy);
+
 	iog_map_init(&map);
 	start_ns = nsec_now();
 	for (i = 0; i < iterations; i++) {
@@ -817,6 +853,11 @@ static struct update_result bench_update(const void *blob, size_t blob_len,
 
 	result.update_us = ((double)(end_ns - start_ns) / 1000.0) /
 			   (double)iterations;
+	if (map.graph) {
+		result.active_blob_bytes = map.graph->blob_len;
+		result.active_compact_bytes =
+			iog_cgraph_mem_bytes(map.graph->compact);
+	}
 	result.active_mem_bytes = iog_map_active_mem_usage(&map);
 	result.retired_mem_bytes = iog_map_retired_mem_usage(&map);
 	result.total_mem_bytes = iog_map_mem_usage(&map);
@@ -1388,11 +1429,12 @@ int main(int argc, char **argv)
 		printf(" | %" PRIu64 " |\n", compact_stats.mem_bytes);
 
 		printf("\nbpf map update\n");
-		printf("| prefixes | verify_us | map_update_us | update_iters | active_mem_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %.2f | %.2f | %" PRIu64 " | %" PRIu64 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %.2f | %" PRIu32 " | %" PRIu64 " |\n",
-		       counts[ci], update.verify_us, update.update_us,
-		       update_iters, update.active_mem_bytes,
+		printf("| prefixes | verify_us | compact_build_us | map_update_us | update_iters | active_blob_B | active_compact_B | active_total_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %.2f | %.2f | %.2f | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %.2f | %" PRIu32 " | %" PRIu64 " |\n",
+		       counts[ci], update.verify_us, update.compact_build_us,
+		       update.update_us, update_iters, update.active_blob_bytes,
+		       update.active_compact_bytes, update.active_mem_bytes,
 		       update.retired_graphs, update.retired_mem_bytes,
 		       update.total_mem_bytes, update.reclaim_us,
 		       update.reclaimed_graphs, update.update_seq);
@@ -1446,7 +1488,7 @@ int main(int argc, char **argv)
 		printf("| prefixes | case | matcher | mean_ns/op | batch_p95_ns/op | batch_p99_ns/op | batch_p999_ns/op | cycles/op | branch_miss/op | l1d_miss/op | llc_miss/op | run_allocs |\n");
 		printf("|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 
-		print_decision_row(counts[ci], "early_miss", "io_graph",
+		print_decision_row(counts[ci], "early_miss", "io_graph_byte_trie",
 				   &early.iog);
 		print_decision_row(counts[ci], "early_miss",
 				   "io_graph_compact_chain", &early.compact);
@@ -1454,7 +1496,7 @@ int main(int argc, char **argv)
 				   &early.chain);
 		print_decision_row(counts[ci], "early_miss", "list_loop",
 				   &early.list);
-		print_decision_row(counts[ci], "late_miss", "io_graph",
+		print_decision_row(counts[ci], "late_miss", "io_graph_byte_trie",
 				   &late.iog);
 		print_decision_row(counts[ci], "late_miss",
 				   "io_graph_compact_chain", &late.compact);
@@ -1462,7 +1504,8 @@ int main(int argc, char **argv)
 				   &late.chain);
 		print_decision_row(counts[ci], "late_miss", "list_loop",
 				   &late.list);
-		print_decision_row(counts[ci], "hit", "io_graph", &hit.iog);
+		print_decision_row(counts[ci], "hit", "io_graph_byte_trie",
+				   &hit.iog);
 		print_decision_row(counts[ci], "hit",
 				   "io_graph_compact_chain", &hit.compact);
 		print_decision_row(counts[ci], "hit", "gen_chain", &hit.chain);
@@ -1475,7 +1518,7 @@ int main(int argc, char **argv)
 		print_matched_path_row(counts[ci],
 				       dataset == WORKLOAD_LONG_PATH ?
 				       "exact_long_match" : "exact_short_match",
-				       "io_graph_accept_inline_last_accept",
+				       "io_graph_byte_trie_last_accept",
 				       &exact_match,
 				       sample_mean_len(wl.exact, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
@@ -1489,12 +1532,12 @@ int main(int argc, char **argv)
 					       compact, wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci],
 				       "prefix_accept_early_return",
-				       "io_graph_accept_inline_first_final_action",
+				       "io_graph_byte_trie_first_final_action",
 				       &prefix_first_action,
 				       sample_mean_len(wl.hit, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci], "prefix_longest_match",
-				       "io_graph_accept_inline_last_accept", &hit.iog,
+				       "io_graph_byte_trie_last_accept", &hit.iog,
 				       sample_mean_len(wl.hit, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci], "prefix_longest_match",
@@ -1520,7 +1563,8 @@ int main(int argc, char **argv)
 			printf(" |\n");
 		}
 
-		printf("\nbpf event path, prefixes=%zu\n", counts[ci]);
+		printf("\nbpf event path (compact run_action shim), prefixes=%zu\n",
+		       counts[ci]);
 		printf("| prefixes | case | payload_B | ns/op | cycles/op | branch_miss/op | l1d_miss/op | llc_miss/op | emitted_ringbuf_B/op | reserve_fail/op | run_allocs |\n");
 		printf("|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 		for (i = 0; i < ARRAY_SIZE(payloads); i++) {

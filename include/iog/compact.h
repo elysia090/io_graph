@@ -52,6 +52,7 @@ struct iog_cgraph_stats {
 int iog_cgraph_new(const struct iog_graph *graph,
 		   struct iog_cgraph **out);
 void iog_cgraph_free(struct iog_cgraph *cg);
+u64 iog_cgraph_mem_bytes(const struct iog_cgraph *cg);
 u32 iog_cgraph_run_action_entry(const struct iog_cgraph *cg, const u8 *buf,
 				u32 len, u32 entry_id);
 u32 iog_cgraph_run_action(const struct iog_cgraph *cg, const u8 *buf,

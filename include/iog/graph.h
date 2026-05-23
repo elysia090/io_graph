@@ -4,6 +4,8 @@
 #include <iog/blob.h>
 #include <stdbool.h>
 
+struct iog_cgraph;
+
 struct iog_graph {
 	const void *blob;
 	size_t blob_len;
@@ -23,6 +25,7 @@ struct iog_graph_obj {
 	void *blob;
 	size_t blob_len;
 	struct iog_graph graph;
+	struct iog_cgraph *compact;
 	struct iog_graph_obj *next_retired;
 };
 
