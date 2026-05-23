@@ -74,6 +74,8 @@ int iog_bpf_kfunc_step(const struct iog_bpf_map *map, u32 state, u32 sym,
 		       u32 *next_state, u32 *action_code);
 u32 iog_bpf_kfunc_run_action(const struct iog_bpf_map *map, const u8 *buf,
 			     u32 len, u32 entry_id);
+u32 iog_bpf_kfunc_run_action_idx(const struct iog_bpf_map *map,
+				 const u8 *buf, u32 len, u32 entry_idx);
 int iog_bpf_kfunc_run(const struct iog_bpf_map *map, const u8 *buf, u32 len,
 		      u32 entry_id, struct iog_run_result *result);
 

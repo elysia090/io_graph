@@ -33,6 +33,10 @@ int main(void)
 					     err, sizeof(err)));
 	TEST_ASSERT(iog_bpf_kfunc_run_action(bpf_map, path,
 					     sizeof(path) - 1, 0) == 1);
+	TEST_ASSERT(iog_bpf_kfunc_run_action_idx(bpf_map, path,
+						 sizeof(path) - 1, 0) == 1);
+	TEST_ASSERT(iog_bpf_kfunc_run_action_idx(bpf_map, path,
+						 sizeof(path) - 1, 1) == 0);
 	regular_mem = iog_bpf_map_mem_usage(bpf_map);
 	iog_bpf_map_free(bpf_map);
 
@@ -45,6 +49,8 @@ int main(void)
 					 &(struct iog_layout_stats){ 0 }) == -ENOENT);
 	TEST_ASSERT(iog_bpf_kfunc_run_action(bpf_map, path,
 					     sizeof(path) - 1, 0) == 1);
+	TEST_ASSERT(iog_bpf_kfunc_run_action_idx(bpf_map, path,
+						 sizeof(path) - 1, 0) == 1);
 	TEST_ASSERT(iog_bpf_kfunc_run(bpf_map, path, sizeof(path) - 1, 0,
 				      &(struct iog_run_result){ 0 }) == -ENOENT);
 	TEST_ASSERT(iog_bpf_map_mem_usage(bpf_map) < regular_mem);

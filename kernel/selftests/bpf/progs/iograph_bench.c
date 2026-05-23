@@ -58,6 +58,8 @@ long reserve_fails;
 
 extern __u32 bpf_iograph_run_action(struct bpf_map *map, const __u8 *buf,
 				    __u32 len, __u32 entry) __ksym;
+extern __u32 bpf_iograph_run_action_idx(struct bpf_map *map, const __u8 *buf,
+					__u32 len, __u32 entry_idx) __ksym;
 
 #define IOGRAPH_EMIT_PAYLOAD_CONST(_len) do {				\
 	event = bpf_ringbuf_reserve(&events, sizeof(*event) + (_len), 0); \
@@ -189,6 +191,21 @@ int iograph_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 
 	action = bpf_iograph_run_action((struct bpf_map *)&policy, selector,
 					len, 0);
+	return action != 0;
+}
+
+SEC("raw_tp/sys_enter")
+int iograph_idx_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u32 len = selector_len;
+	__u32 action;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	action = bpf_iograph_run_action_idx((struct bpf_map *)&policy,
+					    selector, len, 0);
 	return action != 0;
 }
 

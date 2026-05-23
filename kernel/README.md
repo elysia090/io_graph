@@ -26,6 +26,8 @@ Current kernel-side v0 coverage:
 - map update verifies the immutable blob before RCU publication;
 - `bpf_iograph_run_action()` returns the prefilter action without a BPF-side
   result object;
+- `bpf_iograph_run_action_idx()` is the indexed fast-path variant for loaders
+  that already know the entry table index, avoiding multi-entry ID search;
 - `bpf_iograph_run_action()` is fail-open for prefilter use: missing graph,
   invalid entry, too-long input, and no match all return action `0`; the
   diagnostic `run()` path returns typed errors instead;
@@ -44,6 +46,11 @@ Current kernel-side v0 coverage:
 - compact literal edges store only tail bytes after the first dispatch byte,
   and terminal `IOG_NODE_F_FINAL_ACTION` leaves can be carried by the incoming
   compact edge as an immediate action return;
+- high-fanout compact nodes can carry a derived 256-entry byte dispatch table;
+  the prototype threshold is fanout >= 16 to avoid bloating ordinary low-fanout
+  prefix graphs;
+- compact publication caches single-child chain endpoint/length metadata during
+  build, so count and edge-emission passes do not repeat the same chain walk;
 - a prototype `BPF_F_IOGRAPH_ACTION_ONLY` map flag keeps `run_action()` working
   from compact runtime data while dropping the retained byte-trie blob after
   publication; diagnostic `run()` and `step()` require the retained blob;
@@ -75,6 +82,8 @@ Current kernel-side v0 coverage:
 - the selftests bench also exposes `iograph-compact-decision` and
   `iograph-compact-prefilter` aliases so refreshed kernel results can name the
   current compact `run_action()` runtime explicitly;
+- the selftests bench exposes `iograph-compact-idx-decision` for the direct
+  `run_action_idx()` entry-selection path;
 - the selftests bench has POST payload rows:
   `iograph-compact-post-payload` runs compact `run_action()` before copying a
   fixed 300 B, 800 B, or 2048 B payload, and

@@ -302,7 +302,8 @@ static void iograph_fill_payload(void)
 static void iograph_setup_common(bool use_lpm, bool decision_only,
 				 bool lpm_bounded_copy, bool payload_post,
 				 bool acquire_selector,
-				 bool discard_after_reserve)
+				 bool discard_after_reserve,
+				 bool entry_idx)
 {
 	size_t selector_len = strlen(args.selector);
 	struct bpf_program *prog;
@@ -357,6 +358,8 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 			die_errno("update iograph policy", errno);
 		prog = acquire_selector ?
 			ctx.skel->progs.iograph_acquire_decision_bench_run :
+			entry_idx ?
+			ctx.skel->progs.iograph_idx_decision_bench_run :
 			discard_after_reserve ?
 			ctx.skel->progs.iograph_discard_after_reserve_bench_run :
 			payload_post ?
@@ -386,52 +389,57 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 
 static void iograph_setup(void)
 {
-	iograph_setup_common(false, false, false, false, false, false);
+	iograph_setup_common(false, false, false, false, false, false, false);
 }
 
 static void iograph_lpm_setup(void)
 {
-	iograph_setup_common(true, false, false, false, false, false);
+	iograph_setup_common(true, false, false, false, false, false, false);
 }
 
 static void iograph_lpm_bounded_setup(void)
 {
-	iograph_setup_common(true, false, true, false, false, false);
+	iograph_setup_common(true, false, true, false, false, false, false);
 }
 
 static void iograph_decision_setup(void)
 {
-	iograph_setup_common(false, true, false, false, false, false);
+	iograph_setup_common(false, true, false, false, false, false, false);
+}
+
+static void iograph_idx_decision_setup(void)
+{
+	iograph_setup_common(false, true, false, false, false, false, true);
 }
 
 static void iograph_lpm_decision_setup(void)
 {
-	iograph_setup_common(true, true, false, false, false, false);
+	iograph_setup_common(true, true, false, false, false, false, false);
 }
 
 static void iograph_lpm_bounded_decision_setup(void)
 {
-	iograph_setup_common(true, true, true, false, false, false);
+	iograph_setup_common(true, true, true, false, false, false, false);
 }
 
 static void iograph_payload_setup(void)
 {
-	iograph_setup_common(false, false, false, true, false, false);
+	iograph_setup_common(false, false, false, true, false, false, false);
 }
 
 static void iograph_acquire_decision_setup(void)
 {
-	iograph_setup_common(false, true, false, false, true, false);
+	iograph_setup_common(false, true, false, false, true, false, false);
 }
 
 static void iograph_lpm_bounded_acquire_decision_setup(void)
 {
-	iograph_setup_common(true, true, true, false, true, false);
+	iograph_setup_common(true, true, true, false, true, false, false);
 }
 
 static void iograph_discard_after_reserve_setup(void)
 {
-	iograph_setup_common(false, false, false, false, false, true);
+	iograph_setup_common(false, false, false, false, false, true, false);
 }
 
 static void iograph_always_post_setup(void)
@@ -623,6 +631,17 @@ const struct bench bench_iograph_compact_decision = {
 	.argp = &bench_iograph_argp,
 	.validate = iograph_decision_validate,
 	.setup = iograph_decision_setup,
+	.producer_thread = iograph_producer,
+	.measure = iograph_decision_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_compact_idx_decision = {
+	.name = "iograph-compact-idx-decision",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_decision_validate,
+	.setup = iograph_idx_decision_setup,
 	.producer_thread = iograph_producer,
 	.measure = iograph_decision_measure,
 	.report_progress = hits_drops_report_progress,

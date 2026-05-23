@@ -226,6 +226,8 @@ Example after building the selftests bench binary:
 	--selector /drop/event
 ./bench -w 1 -d 5 iograph-compact-decision --blob policy.iog \
 	--selector /drop/event
+./bench -w 1 -d 5 iograph-compact-idx-decision --blob policy.iog \
+	--selector /drop/event
 ./bench -w 1 -d 5 iograph-hook-floor --selector /drop/event
 ./bench -w 1 -d 5 iograph-lpm-decision --prefixes prefixes.txt \
 	--selector /drop/event
@@ -239,6 +241,8 @@ runtime. The compact-named rows are aliases that make the current runtime
 explicit in result tables; they are not a same-build byte-trie versus compact
 A/B comparison. The old byte-trie matched rows are historical snapshots unless
 a separate debug kfunc or map flag is added for benchmarking.
+`iograph-compact-idx-decision` uses `bpf_iograph_run_action_idx()` to measure
+the same compact graph walk with direct entry-index selection.
 
 When building selftests against `/sys/kernel/btf/vmlinux`, the booted kernel
 must already carry `BPF_MAP_TYPE_IOGRAPH`. A stock WSL kernel can compile the

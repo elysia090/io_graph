@@ -5,9 +5,13 @@
 
 #define IOG_CEDGE_LITERAL	(1u << 0)
 #define IOG_CEDGE_FINAL_ACTION	(1u << 1)
+#define IOG_DISPATCH256_THRESHOLD	16u
+#define IOG_DISPATCH256_SIZE	256u
 
 struct iog_cnode {
 	u32 edge_start;
+	/* 1-based offset into dispatch; 0 means no dispatch table. */
+	u32 dispatch_start;
 	u16 edge_cnt;
 	u16 flags;
 	u32 default_dst;
@@ -33,6 +37,7 @@ struct iog_cgraph {
 	u32 node_cnt;
 	u32 edge_cnt;
 	u32 lit_len;
+	u32 dispatch_cnt;
 	u32 max_input_len;
 	u32 single_entry_id;
 	u32 single_entry_state;
@@ -41,6 +46,7 @@ struct iog_cgraph {
 	u32 entry_cnt;
 	struct iog_cnode *nodes;
 	struct iog_cedge *edges;
+	u16 *dispatch;
 	u8 *lits;
 };
 
@@ -49,6 +55,7 @@ struct iog_cgraph_stats {
 	u32 edges;
 	u32 literal_edges;
 	u32 literal_bytes;
+	u32 dispatch_tables;
 	u32 max_literal_len;
 	u32 max_fanout;
 	u32 max_depth;
@@ -62,6 +69,8 @@ void iog_cgraph_free(struct iog_cgraph *cg);
 u64 iog_cgraph_mem_bytes(const struct iog_cgraph *cg);
 u32 iog_cgraph_run_action_entry(const struct iog_cgraph *cg, const u8 *buf,
 				u32 len, u32 entry_id);
+u32 iog_cgraph_run_action_idx(const struct iog_cgraph *cg, const u8 *buf,
+			      u32 len, u32 entry_idx);
 u32 iog_cgraph_run_action(const struct iog_cgraph *cg, const u8 *buf,
 			  u32 len);
 u32 iog_cgraph_count_transitions_entry(const struct iog_cgraph *cg,

@@ -126,6 +126,102 @@ static void test_compact_preserves_longest_accept(void)
 			    sizeof(samples) / sizeof(samples[0]));
 }
 
+static void test_compact_high_fanout_dispatch(void)
+{
+	struct fanout_blob {
+		struct iog_blob_hdr hdr;
+		struct iog_node nodes[17];
+		struct iog_edge edges[16];
+		struct iog_entry entries[1];
+		struct iog_accept accepts[17];
+	} blob = {
+		.hdr = {
+			.magic = IOG_MAGIC,
+			.version = IOG_VERSION,
+			.node_cnt = 17,
+			.edge_cnt = 16,
+			.entry_cnt = 1,
+			.accept_cnt = 17,
+			.alphabet_size = 256,
+			.initial_state = 0,
+			.nodes_off = offsetof(struct fanout_blob, nodes),
+			.edges_off = offsetof(struct fanout_blob, edges),
+			.entries_off = offsetof(struct fanout_blob, entries),
+			.accepts_off = offsetof(struct fanout_blob, accepts),
+			.total_size = sizeof(struct fanout_blob),
+			.max_input_len = 16,
+		},
+		.nodes = {
+			{ .edge_start = 0, .edge_cnt = 16,
+			  .default_dst = IOG_NO_STATE },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 1 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 2 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 3 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 4 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 5 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 6 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 7 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 8 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 9 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 10 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 11 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 12 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 13 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 14 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 15 },
+			{ .edge_start = 16, .edge_cnt = 0,
+			  .default_dst = IOG_NO_STATE, .accept_id = 16 },
+		},
+		.entries = {
+			{ .id = 0, .state = 0 },
+		},
+	};
+	struct iog_cgraph *compact;
+	struct iog_cgraph_stats stats;
+	struct iog_graph graph;
+	char err[256] = "";
+	u32 i;
+
+	for (i = 0; i < 16; i++) {
+		blob.edges[i].sym_lo = 'a' + i;
+		blob.edges[i].sym_hi = 'a' + i;
+		blob.edges[i].dst = i + 1;
+		blob.accepts[i + 1].id = i + 1;
+		blob.accepts[i + 1].code = 100 + i;
+	}
+
+	TEST_ASSERT(!iog_graph_from_blob(&graph, &blob, sizeof(blob),
+					 &iog_default_limits, err,
+					 sizeof(err)));
+	TEST_ASSERT(!iog_graph_inline_accept_codes(&graph));
+	TEST_ASSERT(!iog_cgraph_new(&graph, &compact));
+	TEST_ASSERT(!iog_cgraph_stats(compact, &stats));
+	TEST_ASSERT(stats.dispatch_tables == 1);
+	TEST_ASSERT(iog_cgraph_run_action(compact, (const u8 *)"a", 1) == 100);
+	TEST_ASSERT(iog_cgraph_run_action(compact, (const u8 *)"p", 1) == 115);
+	TEST_ASSERT(iog_cgraph_run_action(compact, (const u8 *)"z", 1) == 0);
+	TEST_ASSERT(iog_cgraph_run_action_idx(compact, (const u8 *)"c", 1, 0) ==
+		    102);
+	TEST_ASSERT(iog_cgraph_run_action_idx(compact, (const u8 *)"c", 1, 1) ==
+		    0);
+	iog_cgraph_free(compact);
+}
+
 static void test_compact_shared_and_long_paths(void)
 {
 	static const u8 common[] =
@@ -351,6 +447,7 @@ int main(void)
 	iog_cgraph_free(compact);
 	test_compact_preserves_range_edge();
 	test_compact_preserves_longest_accept();
+	test_compact_high_fanout_dispatch();
 	test_compact_shared_and_long_paths();
 	test_compact_generated_prefix_set();
 	test_compact_random_prefix_differential();

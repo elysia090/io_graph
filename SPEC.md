@@ -909,6 +909,9 @@ non-accepting single-child byte chains:
   become literal-tail edges
 terminal FINAL_ACTION leaves:
   may become final-action compact edges
+high-fanout compact nodes:
+  may get an optional 256-entry byte dispatch table when fanout is high enough
+  to justify the 512 B table
 
 Literal-tail edge semantics:
 
@@ -920,6 +923,11 @@ Literal-tail edge semantics:
 
 This removes the byte-expanded trie walk from the pre-emission hot path while
 keeping the verifier-facing source blob simple.
+
+The whole `run_action()` call is still O(input bytes inspected). The direct
+dispatch table only makes the selected node's edge lookup O(1) for high-fanout
+nodes. Low-fanout nodes keep the smaller single-edge, short linear, and binary
+search dispatch paths because a 256-entry table would be wasted memory there.
 
 ⸻
 
@@ -1072,6 +1080,16 @@ than returning an edge index and immediately indexing the edge array again.
 This removes a small hot-path intermediate value without changing blob
 semantics.
 
+High-fanout compact nodes may carry a derived dispatch table:
+
+byte -> local compact-edge offset
+
+The current implementation builds this table only at fanout >= 16. That keeps
+ordinary prefix graphs from paying a 512 B table for low-fanout nodes while
+making branch-heavy nodes use direct byte dispatch. This is a node-local
+constant-factor optimization, not a claim that the whole prefix decision is
+O(1).
+
 v0 does not produce captures or variable-sized match lists.
 
 The compact runtime is the primary execution object for pre-emission
@@ -1098,6 +1116,16 @@ __bpf_kfunc __u32 bpf_iograph_run_action(struct bpf_map *map,
 
 The pre-emission fast path returns only the action code. The caller can decide
 DROP/POST without constructing a `final_state, action_code` result object.
+
+__bpf_kfunc __u32 bpf_iograph_run_action_idx(struct bpf_map *map,
+                                             const __u8 *buf,
+                                             __u32 len,
+                                             __u32 entry_idx);
+
+The indexed variant is for loaders that already know the selector's entry
+table index. It replaces the multi-entry `entry_id -> state` search with a
+direct bounds check and array load; graph execution remains O(input bytes
+inspected).
 
 19.3 Run kfunc
 
@@ -1131,6 +1159,9 @@ run_action:
   amortizes kfunc call overhead
   walks the compact publication-time runtime graph
   benchmark target
+run_action_idx:
+  same action-only runtime with direct entry-index selection
+  useful when the loader has fixed selector-to-entry indexes
 run:
   final-state observation
   selftest and debug target
@@ -1197,6 +1228,7 @@ copy blob from userspace
 verify blob
 inline accept IDs into action codes
 build immutable compact runtime graph
+cache single-child chain endpoint/length metadata while building compact edges
 lock update_lock
 swap graph pointer with rcu_assign_pointer()
 unlock
@@ -1245,14 +1277,14 @@ the kernel prototype map flag `BPF_F_IOGRAPH_ACTION_ONLY`.
 Observed userspace memory effect:
 
 typical 1000 prefixes:
-  retained source blob + compact runtime: 385,577 B
-  action-only compact runtime:             39,329 B
+  retained source blob + compact runtime: 387,101 B
+  action-only compact runtime:             40,853 B
 shared-prefix 1000:
-  retained source blob + compact runtime: 227,631 B
-  action-only compact runtime:             25,891 B
+  retained source blob + compact runtime: 228,087 B
+  action-only compact runtime:             26,347 B
 long-path 1000:
-  retained source blob + compact runtime:  85,444 B
-  action-only compact runtime:             20,988 B
+  retained source blob + compact runtime:  85,900 B
+  action-only compact runtime:             21,444 B
 
 ⸻
 
@@ -1284,12 +1316,14 @@ struct bpf_iograph_graph {
     struct iog_entry *compact_entries;
     struct bpf_iograph_cnode *compact_nodes;
     struct bpf_iograph_cedge *compact_edges;
+    u16 *compact_dispatch;
     u8 *compact_lits;
 
     /* compact-runtime stats and accounting */
     u32 compact_node_cnt;
     u32 compact_edge_cnt;
     u32 compact_lit_len;
+    u32 compact_dispatch_cnt;
     u32 compact_literal_edge_cnt;
     u32 compact_max_literal_len;
     u64 compact_mem_bytes;

@@ -76,7 +76,7 @@ diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/b
  	{ &bench_strncmp_argp, 0, "bpf_strncmp helper benchmark", 0 },
 +	{ &bench_iograph_argp, 0, "io_graph prefilter benchmark", 0 },
  	{ &bench_local_storage_rcu_tasks_trace_argp, 0,
-@@ -550,4 +552,18 @@ extern const struct bench bench_hashmap_with_bloom;
+@@ -550,4 +552,19 @@ extern const struct bench bench_hashmap_with_bloom;
  extern const struct bench bench_bpf_loop;
  extern const struct bench bench_strncmp_no_helper;
  extern const struct bench bench_strncmp_helper;
@@ -88,6 +88,7 @@ diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/b
 +extern const struct bench bench_iograph_lpm_bounded_prefilter;
 +extern const struct bench bench_iograph_decision;
 +extern const struct bench bench_iograph_compact_decision;
++extern const struct bench bench_iograph_compact_idx_decision;
 +extern const struct bench bench_iograph_acquire_decision;
 +extern const struct bench bench_iograph_discard_after_reserve;
 +extern const struct bench bench_iograph_hook_floor;
@@ -95,7 +96,7 @@ diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/b
 +extern const struct bench bench_iograph_lpm_bounded_decision;
 +extern const struct bench bench_iograph_lpm_bounded_acquire_decision;
  extern const struct bench bench_bpf_hashmap_full_update;
-@@ -625,4 +629,18 @@ static const struct bench *benchs[] = {
+@@ -625,4 +629,19 @@ static const struct bench *benchs[] = {
  	&bench_bpf_loop,
  	&bench_strncmp_no_helper,
  	&bench_strncmp_helper,
@@ -107,6 +108,7 @@ diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/b
 +	&bench_iograph_lpm_bounded_prefilter,
 +	&bench_iograph_decision,
 +	&bench_iograph_compact_decision,
++	&bench_iograph_compact_idx_decision,
 +	&bench_iograph_acquire_decision,
 +	&bench_iograph_discard_after_reserve,
 +	&bench_iograph_hook_floor,

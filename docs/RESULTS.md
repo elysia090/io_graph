@@ -10,9 +10,9 @@ The active result track is the kernel prototype:
 | map type | source split into map and kfunc units with RCU whole-graph replacement | `kernel/bpf/` |
 | blob verifier | map update rejects bad layout, bounds, unknown flags, count caps, and blob-size caps | `kernel/bpf/iograph_map.c` |
 | interpreter | required non-JIT execution path; `run_action()` uses the compact runtime graph, `run()`/`step()` keep the byte-trie diagnostic paths | `kernel/bpf/iograph_kfunc.c` |
-| kfunc API | action-only prefilter kfunc plus run/step observation paths; kfuncs hold short internal RCU read sections and are available to the raw-tracepoint bench path | `kernel/bpf/iograph_kfunc.c` |
+| kfunc API | action-only prefilter kfunc plus indexed action variant and run/step observation paths; kfuncs hold short internal RCU read sections and are available to the raw-tracepoint bench path | `kernel/bpf/iograph_kfunc.c` |
 | selftest | bad blob update rejection plus DROP-before-ringbuf-reserve path | `kernel/selftests/bpf/` |
-| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit; LPM has full-key, bounded-copy, and bounded-acquisition rows | `kernel/selftests/bpf/benchs/bench_iograph.c` |
+| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit; the indexed row measures direct entry selection; LPM has full-key, bounded-copy, and bounded-acquisition rows | `kernel/selftests/bpf/benchs/bench_iograph.c` |
 | pre-ringbuf path | BPF program calls `bpf_iograph_run_action()` before reserve | `bpf/prefilter_demo.bpf.c` |
 | compact runtime | userspace and kernel map-publication single-child chain compression; refreshed kernel rows now beat the same-hook LPM baseline on matched prefix paths | `src/iog_compact.c`, `kernel/bpf/iograph_map.c`, `results/native/current.md` |
 
@@ -51,15 +51,19 @@ entrypoint for these rows.
 The latest compact hot-path implementation stores only literal tail bytes,
 allows final-action terminal leaves to return from the incoming compact edge,
 and prunes non-entry terminal final-action leaves from the compact node array.
-That reduces typical 1000-prefix compact runtime memory to 39,177 B and
-typical 10000-prefix compact runtime memory to 164,799 B. The kernel table
-above is the latest booted-kernel measurement from the patched WSL kernel.
+It also has an optional high-fanout byte dispatch table and an indexed action
+kfunc for loader-known entries. The existing measured datasets do not exceed
+the dispatch threshold, so no dispatch tables are allocated in those rows; the
+compact node metadata still raises typical 1000-prefix compact runtime memory
+to 40,701 B and typical 10000-prefix compact runtime memory to 172,147 B. The
+kernel table above is the latest booted-kernel measurement from the patched WSL
+kernel; the indexed row still needs a booted-kernel refresh.
 
 IO-aware pre-emission accounting is now folded into the userspace current
 snapshot. It records `max_probe_len`, selector-copy-plus-decision rows,
 discard-after-reserve baselines, action-only map memory, update scratch/peak
 bytes, and dirty-cacheline accounting. Typical 1000-prefix active memory is
-385,577 B with the retained blob and 39,329 B in action-only mode, while a
+387,101 B with the retained blob and 40,853 B in action-only mode, while a
 300 B early reject reserves 0 B with drop-before-reserve versus 344 B with
 discard-after-reserve.
 

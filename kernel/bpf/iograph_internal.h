@@ -15,9 +15,13 @@
 #define BPF_IOGRAPH_MAX_INPUT_LEN	65536u
 #define BPF_IOGRAPH_CEDGE_LITERAL	(1u << 0)
 #define BPF_IOGRAPH_CEDGE_FINAL_ACTION	(1u << 1)
+#define BPF_IOGRAPH_DISPATCH256_THRESHOLD	16u
+#define BPF_IOGRAPH_DISPATCH256_SIZE	256u
 
 struct bpf_iograph_cnode {
 	u32 edge_start;
+	/* 1-based offset into compact_dispatch; 0 means no dispatch table. */
+	u32 dispatch_start;
 	u16 edge_cnt;
 	u16 flags;
 	u32 default_dst;
@@ -51,6 +55,7 @@ struct bpf_iograph_graph {
 	u32 compact_node_cnt;
 	u32 compact_edge_cnt;
 	u32 compact_lit_len;
+	u32 compact_dispatch_cnt;
 	u32 compact_literal_edge_cnt;
 	u32 compact_max_literal_len;
 	u64 compact_mem_bytes;
@@ -65,6 +70,7 @@ struct bpf_iograph_graph {
 	struct iog_entry *compact_entries;
 	struct bpf_iograph_cnode *compact_nodes;
 	struct bpf_iograph_cedge *compact_edges;
+	u16 *compact_dispatch;
 	u8 *compact_lits;
 };
 
@@ -80,6 +86,8 @@ __bpf_kfunc int bpf_iograph_run(struct bpf_map *map, const u8 *buf,
 				struct bpf_iograph_run_result *result__uninit);
 __bpf_kfunc u32 bpf_iograph_run_action(struct bpf_map *map, const u8 *buf,
 				       u32 buf__sz, u32 entry_id);
+__bpf_kfunc u32 bpf_iograph_run_action_idx(struct bpf_map *map, const u8 *buf,
+					   u32 buf__sz, u32 entry_idx);
 __bpf_kfunc u32 bpf_iograph_step(struct bpf_map *map, u32 state, u32 sym);
 
 #endif /* _BPF_IOGRAPH_INTERNAL_H */

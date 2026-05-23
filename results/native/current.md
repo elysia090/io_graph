@@ -47,6 +47,11 @@ The previous byte-trie kernel snapshot had matched decisions around
 352-356 ns/op. The compact runtime brings matched decisions down to
 164-176 ns/op on the same raw-tracepoint measurement shape.
 
+Current source also adds `bpf_iograph_run_action_idx()` and the
+`iograph-compact-idx-decision` bench row for direct entry-index selection. That
+row is not folded into this table until the patched 6.18 WSL kernel is booted
+again and the same-hook matrix is refreshed.
+
 ## Same-Bench LPM Trie
 
 `iograph-lpm-decision` runs the same selector and attach/trigger path through
