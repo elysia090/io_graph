@@ -1,0 +1,4 @@
+/var/lib/kubelet/pods/t00/n00/api/o0000/
+/var/log/containers/t01/n00/api/o0001/
+/opt/acme/cache/t02/n00/api/o0002/
+/srv/app/run/t03/n00/api/o0003/

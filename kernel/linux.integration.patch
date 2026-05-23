@@ -1,0 +1,98 @@
+diff --git a/include/uapi/linux/bpf.h b/include/uapi/linux/bpf.h
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -1025,5 +1025,6 @@ enum bpf_map_type {
+ 	BPF_MAP_TYPE_USER_RINGBUF,
+ 	BPF_MAP_TYPE_CGRP_STORAGE,
+ 	BPF_MAP_TYPE_ARENA,
++	BPF_MAP_TYPE_IOGRAPH,
+ 	__MAX_BPF_MAP_TYPE
+ };
+diff --git a/include/linux/bpf_types.h b/include/linux/bpf_types.h
+--- a/include/linux/bpf_types.h
++++ b/include/linux/bpf_types.h
+@@ -132,5 +132,6 @@ BPF_MAP_TYPE(BPF_MAP_TYPE_RINGBUF, ringbuf_map_ops)
+ BPF_MAP_TYPE(BPF_MAP_TYPE_BLOOM_FILTER, bloom_filter_map_ops)
+ BPF_MAP_TYPE(BPF_MAP_TYPE_USER_RINGBUF, user_ringbuf_map_ops)
+ BPF_MAP_TYPE(BPF_MAP_TYPE_ARENA, arena_map_ops)
++BPF_MAP_TYPE(BPF_MAP_TYPE_IOGRAPH, iograph_map_ops)
+ 
+ BPF_LINK_TYPE(BPF_LINK_TYPE_RAW_TRACEPOINT, raw_tracepoint)
+diff --git a/tools/include/uapi/linux/bpf.h b/tools/include/uapi/linux/bpf.h
+--- a/tools/include/uapi/linux/bpf.h
++++ b/tools/include/uapi/linux/bpf.h
+@@ -1025,5 +1025,6 @@ enum bpf_map_type {
+ 	BPF_MAP_TYPE_USER_RINGBUF,
+ 	BPF_MAP_TYPE_CGRP_STORAGE,
+ 	BPF_MAP_TYPE_ARENA,
++	BPF_MAP_TYPE_IOGRAPH,
+ 	__MAX_BPF_MAP_TYPE
+ };
+diff --git a/kernel/bpf/Makefile b/kernel/bpf/Makefile
+--- a/kernel/bpf/Makefile
++++ b/kernel/bpf/Makefile
+@@ -8,2 +8,3 @@ CFLAGS_trace.o += -I$(src)
+ obj-$(CONFIG_BPF_SYSCALL) += hashtab.o arraymap.o percpu_freelist.o bpf_lru_list.o lpm_trie.o map_in_map.o bloom_filter.o
++obj-$(CONFIG_BPF_SYSCALL) += iograph_map.o iograph_kfunc.o
+ obj-$(CONFIG_BPF_SYSCALL) += local_storage.o queue_stack_maps.o ringbuf.o
+diff --git a/kernel/bpf/syscall.c b/kernel/bpf/syscall.c
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -1487,6 +1487,7 @@ static int map_create(union bpf_attr *attr, bpfptr_t uattr)
+ 	case BPF_MAP_TYPE_STRUCT_OPS:
+ 	case BPF_MAP_TYPE_CPUMAP:
+ 	case BPF_MAP_TYPE_ARENA:
++	case BPF_MAP_TYPE_IOGRAPH:
+ 		if (!bpf_token_capable(token, CAP_BPF))
+ 			goto put_token;
+ 		break;
+diff --git a/tools/testing/selftests/bpf/Makefile b/tools/testing/selftests/bpf/Makefile
+--- a/tools/testing/selftests/bpf/Makefile
++++ b/tools/testing/selftests/bpf/Makefile
+@@ -835,4 +835,5 @@ $(OUTPUT)/bench_ringbufs.o: $(OUTPUT)/ringbuf_bench.skel.h \
+ $(OUTPUT)/bench_bloom_filter_map.o: $(OUTPUT)/bloom_filter_bench.skel.h
+ $(OUTPUT)/bench_bpf_loop.o: $(OUTPUT)/bpf_loop_bench.skel.h
+ $(OUTPUT)/bench_strncmp.o: $(OUTPUT)/strncmp_bench.skel.h
++$(OUTPUT)/bench_iograph.o: $(OUTPUT)/iograph_bench.skel.h
+ $(OUTPUT)/bench_bpf_hashmap_full_update.o: $(OUTPUT)/bpf_hashmap_full_update_bench.skel.h
+@@ -856,4 +857,5 @@ $(OUTPUT)/bench: $(OUTPUT)/bench.o \
+ 		 $(OUTPUT)/bench_bloom_filter_map.o \
+ 		 $(OUTPUT)/bench_bpf_loop.o \
+ 		 $(OUTPUT)/bench_strncmp.o \
++		 $(OUTPUT)/bench_iograph.o \
+ 		 $(OUTPUT)/bench_bpf_hashmap_full_update.o \
+diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/bench.c
+--- a/tools/testing/selftests/bpf/bench.c
++++ b/tools/testing/selftests/bpf/bench.c
+@@ -277,4 +277,5 @@ extern struct argp bench_bpf_loop_argp;
+ extern struct argp bench_local_storage_argp;
+ extern struct argp bench_local_storage_rcu_tasks_trace_argp;
+ extern struct argp bench_strncmp_argp;
++extern struct argp bench_iograph_argp;
+ extern struct argp bench_hashmap_lookup_argp;
+@@ -292,4 +293,5 @@ static const struct argp_child bench_parsers[] = {
+ 	{ &bench_bpf_loop_argp, 0, "bpf_loop helper benchmark", 0 },
+ 	{ &bench_local_storage_argp, 0, "local_storage benchmark", 0 },
+ 	{ &bench_strncmp_argp, 0, "bpf_strncmp helper benchmark", 0 },
++	{ &bench_iograph_argp, 0, "io_graph prefilter benchmark", 0 },
+ 	{ &bench_local_storage_rcu_tasks_trace_argp, 0,
+@@ -550,4 +552,9 @@ extern const struct bench bench_hashmap_with_bloom;
+ extern const struct bench bench_bpf_loop;
+ extern const struct bench bench_strncmp_no_helper;
+ extern const struct bench bench_strncmp_helper;
++extern const struct bench bench_iograph_prefilter;
++extern const struct bench bench_iograph_lpm_prefilter;
++extern const struct bench bench_iograph_decision;
++extern const struct bench bench_iograph_hook_floor;
++extern const struct bench bench_iograph_lpm_decision;
+ extern const struct bench bench_bpf_hashmap_full_update;
+@@ -625,4 +629,9 @@ static const struct bench *benchs[] = {
+ 	&bench_bpf_loop,
+ 	&bench_strncmp_no_helper,
+ 	&bench_strncmp_helper,
++	&bench_iograph_prefilter,
++	&bench_iograph_lpm_prefilter,
++	&bench_iograph_decision,
++	&bench_iograph_hook_floor,
++	&bench_iograph_lpm_decision,
+ 	&bench_bpf_hashmap_full_update,

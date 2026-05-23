@@ -325,6 +325,7 @@ Included:
 * load-time verifier,
 * interpreter walker,
 * experimental bpf_iograph_step() kfunc,
+* experimental bpf_iograph_run_action() kfunc,
 * experimental bpf_iograph_run() kfunc,
 * minimal x86-64 self-loop-focused JIT,
 * RCU whole-graph update,
@@ -882,29 +883,51 @@ __bpf_kfunc __u32 bpf_iograph_step(struct bpf_map *map,
                                    __u32 state,
                                    __u32 sym);
 
-19.2 Run kfunc
+19.2 Action kfunc
+
+__bpf_kfunc __u32 bpf_iograph_run_action(struct bpf_map *map,
+                                         const __u8 *buf,
+                                         __u32 len,
+                                         __u32 entry);
+
+The pre-emission fast path returns only the action code. The caller can decide
+DROP/POST without constructing a `final_state, action_code` result object.
+
+19.3 Run kfunc
+
+struct bpf_iograph_run_result {
+        __u32 final_state;
+        __u32 action_code;
+};
 
 __bpf_kfunc int bpf_iograph_run(struct bpf_map *map,
                                 const __u8 *buf,
                                 __u32 len,
                                 __u32 entry,
-                                __u32 *final_state,
-                                __u32 *action_code);
+                                struct bpf_iograph_run_result *result);
 
-19.3 Step vs run
+`run()` keeps final-state output for validation, debug, and integrations that
+need to inspect the terminal graph state.
+
+19.4 Step vs run_action vs run
 
 step() exists for integration and control.
 
-run() is the performance path.
+run_action() is the pre-emission performance path.
 
 step:
   simple
   explicit
   useful for debugging
-run:
+run_action:
+  returns only the DROP/POST/classification answer
+  avoids a BPF-side result object for prefilter callers
   amortizes kfunc call overhead
   enables self-loop JIT
   benchmark target
+run:
+  final-state observation
+  selftest and debug target
 
 ⸻
 
@@ -1483,7 +1506,7 @@ The initial implementation is a small BPF map type prototype:
 * immutable cyclic graph blob,
 * load-time verifier,
 * allocation-free walker,
-* experimental step/run kfuncs,
+* experimental step/run_action/run kfuncs,
 * RCU graph replacement,
 * minimal self-loop JIT.
 

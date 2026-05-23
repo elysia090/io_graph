@@ -1,0 +1,3 @@
+/drop/event
+/var/lib/kubelet/pods/t00/n00/api/o0000/event.log
+/early/miss

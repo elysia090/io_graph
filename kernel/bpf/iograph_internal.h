@@ -1,0 +1,47 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef _BPF_IOGRAPH_INTERNAL_H
+#define _BPF_IOGRAPH_INTERNAL_H
+
+#include <linux/bpf.h>
+#include <linux/mutex.h>
+#include <linux/rcupdate.h>
+#include <uapi/linux/bpf_iograph.h>
+
+#define BPF_IOGRAPH_MAX_BLOB_SIZE	(8u << 20)
+#define BPF_IOGRAPH_MAX_NODES		1000000u
+#define BPF_IOGRAPH_MAX_EDGES		4000000u
+#define BPF_IOGRAPH_MAX_ENTRIES		64u
+#define BPF_IOGRAPH_MAX_ACCEPTS		65536u
+#define BPF_IOGRAPH_MAX_INPUT_LEN	65536u
+
+struct bpf_iograph_graph {
+	struct rcu_head rcu;
+	u32 blob_len;
+	u32 max_input_len;
+	u32 single_entry_id;
+	u32 single_entry_state;
+	bool single_entry;
+	bool accept_codes_inline;
+	const struct iog_blob_hdr *hdr;
+	const struct iog_node *nodes;
+	const struct iog_edge *edges;
+	const struct iog_entry *entries;
+	const struct iog_accept *accepts;
+	u8 blob[];
+};
+
+struct bpf_iograph_map {
+	struct bpf_map map;
+	struct bpf_iograph_graph __rcu *graph;
+	struct mutex update_lock;
+	u64 update_seq;
+};
+
+__bpf_kfunc int bpf_iograph_run(struct bpf_map *map, const u8 *buf,
+				u32 buf__sz, u32 entry_id,
+				struct bpf_iograph_run_result *result__uninit);
+__bpf_kfunc u32 bpf_iograph_run_action(struct bpf_map *map, const u8 *buf,
+				       u32 buf__sz, u32 entry_id);
+__bpf_kfunc u32 bpf_iograph_step(struct bpf_map *map, u32 state, u32 sym);
+
+#endif /* _BPF_IOGRAPH_INTERNAL_H */
