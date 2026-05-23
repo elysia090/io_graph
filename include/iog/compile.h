@@ -13,6 +13,8 @@ struct iog_compile_stats {
 	u32 node_cnt;
 	u32 edge_cnt;
 	u32 accept_cnt;
+	u32 max_prefix_len;
+	u32 max_probe_len;
 	u64 prefix_bytes;
 	u64 blob_bytes;
 	u64 dense_table_bytes;

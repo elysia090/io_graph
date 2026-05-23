@@ -8,6 +8,7 @@
 #define IOG_BPF_EXIST		2u
 #define IOG_BPF_KEY_SIZE	((u32)sizeof(u32))
 #define IOG_BPF_MAX_ENTRIES	1u
+#define IOG_BPF_F_ACTION_ONLY	(1u << 0)
 
 struct iog_map {
 	struct iog_graph_obj *graph;

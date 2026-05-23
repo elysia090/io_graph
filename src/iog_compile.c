@@ -186,6 +186,7 @@ int iog_compile_prefixes(const struct iog_prefix *prefixes, size_t nr,
 	u32 node_cap = 0, node_cnt = 0;
 	u32 edge_cnt = 0, accept_cnt = 0, accept_cap = 0;
 	u32 *accept_codes = NULL;
+	u32 max_prefix_len = 0;
 	size_t prefix_bytes = 0, total_size;
 	void *blob = NULL;
 	u32 i, j, edge_pos = 0;
@@ -219,6 +220,8 @@ int iog_compile_prefixes(const struct iog_prefix *prefixes, size_t nr,
 			goto out;
 		}
 		prefix_bytes += prefixes[i].len;
+		if (prefixes[i].len > max_prefix_len)
+			max_prefix_len = prefixes[i].len;
 
 		ret = accept_id_for_code(prefixes[i].action_code, &accept_codes,
 					 &accept_cnt, &accept_cap, &accept_id);
@@ -302,10 +305,18 @@ int iog_compile_prefixes(const struct iog_prefix *prefixes, size_t nr,
 		goto out;
 
 	if (stats) {
+		u32 max_probe_len = max_prefix_len == UINT32_MAX ?
+				    max_prefix_len : max_prefix_len + 1;
+
+		if (max_probe_len > max_input_len)
+			max_probe_len = max_input_len;
+
 		memset(stats, 0, sizeof(*stats));
 		stats->node_cnt = node_cnt;
 		stats->edge_cnt = edge_cnt;
 		stats->accept_cnt = accept_cnt;
+		stats->max_prefix_len = max_prefix_len;
+		stats->max_probe_len = max_probe_len;
 		stats->prefix_bytes = prefix_bytes;
 		stats->blob_bytes = total_size;
 		stats->dense_table_bytes = iog_dense_table_bytes(node_cnt);

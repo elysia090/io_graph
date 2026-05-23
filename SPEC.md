@@ -3,8 +3,8 @@ io_graph Specification
 Status: Design Draft
 Maturity: Experimental
 Target v0: Out-of-tree BPF map type prototype
-Primary Shape: BPF_MAP_TYPE_IOGRAPH-like cyclic FSM map + step/run kfunc + interpreter + minimal x86-64 self-loop JIT
-Primary Goal: Preserve compact cyclic graph artifacts as kernel/BPF-side runtime objects when doing so avoids large intermediate objects
+Primary Shape: BPF_MAP_TYPE_IOGRAPH-like map + verified byte-trie blob + publication-time compact runtime graph + action-only run_action kfunc + diagnostic run/step kfuncs
+Primary Goal: Return a small pre-emission action decision before constructing large event, ringbuf, program, or table objects
 Primary v0 Workload: High-cardinality pre-ringbuf filtering
 Primary Non-Goal: Do not build a general regex engine, a general parser VM, or a new standalone kernel subsystem
 
@@ -12,9 +12,10 @@ Primary Non-Goal: Do not build a general regex engine, a general parser VM, or a
 
 1. Summary
 
-io_graph is a BPF-side runtime artifact for compact cyclic finite-state graphs.
+io_graph is a BPF-side action policy object for compact finite-state graphs.
 
-Its purpose is to keep a compact cyclic graph alive across the userspace/kernel boundary, rather than flattening it into:
+Its purpose is to keep the policy as verified graph data and publish an
+execution-shaped compact runtime graph, rather than flattening the policy into:
 
 * dense transition tables,
 * generated BPF programs,
@@ -30,16 +31,42 @@ The first production-shaped workload is high-cardinality pre-ringbuf filtering: 
 The v0 target is a small BPF map type prototype:
 
 BPF_MAP_TYPE_IOGRAPH
-  immutable cyclic graph blob
+  immutable verified byte-trie graph blob
   load-time verifier
-  interpreter walker
-  experimental step/run kfuncs
-  minimal x86-64 JIT focused on self-loop SCCs
+  publication-time compact runtime graph
+  action-only run_action kfunc
+  diagnostic step/run kfuncs
   RCU whole-graph hot swap
 
 The core idea is not that FSM compression is new. It is not.
 
-The core idea is that, when the final decision only needs a small invariant over a compact cyclic graph, the graph itself should become the runtime object.
+The core idea is that, when the final answer is a small action code, the
+runtime should compute that action before materializing larger objects.
+
+io_graph separates two artifacts:
+
+verification artifact:
+  simple byte-trie graph blob uploaded by userspace
+execution artifact:
+  compact runtime graph built after verification and publication preparation
+
+The BPF hot path for `run_action()` does not walk the byte-expanded source
+graph. It walks the compact runtime graph.
+
+Current v0 implementation shape:
+
+verified byte-trie blob
+  -> verifier
+  -> accept_id to action_code inline rewrite
+  -> runtime-only compact graph
+  -> single-child byte chains become literal-tail edges
+  -> terminal FINAL_ACTION leaves may become final-action edges
+  -> bpf_iograph_run_action() returns DROP/POST/class_id before ringbuf reserve
+
+`bpf_iograph_run()` and `bpf_iograph_step()` keep the byte-trie diagnostic
+paths. `bpf_iograph_run_action()` is the pre-emission hot path and walks the
+compact runtime graph. Self-loop JIT remains a later optimization track, not
+part of the currently validated v0 kernel path.
 
 ⸻
 
@@ -83,6 +110,18 @@ mutable pointer tree
 
 The project succeeds only if preserving the cyclic form at runtime gives a measurable benefit over flattening.
 
+For v0 prefix filtering, the measurable form is more precise:
+
+source artifact:
+  verified byte-trie blob
+published runtime artifact:
+  compact action graph with literal-tail edges and optional final-action edges
+hot-path result:
+  action_code only
+
+The source byte graph is retained for diagnostics unless action-only mode is
+used. It is not the hot execution object for pre-emission filtering.
+
 ⸻
 
 4. IO-aware Execution Principle
@@ -113,10 +152,21 @@ answer:
 invariant:
   current_state + best_accept_code over raw path bytes
 execution order:
-  read raw path argument, run graph, return before buffer write if DROP is final
+  acquire only the bounded selector bytes, run graph, return before buffer
+  write if DROP is final
 why cyclic graph:
   shared prefixes, shared continuations, default paths, and self-loop scanner
   states remain compact and executable
+
+For prefix policies, the producer can also report:
+
+max_prefix_len:
+  longest configured prefix
+max_probe_len:
+  min(max_input_len, max_prefix_len + 1)
+
+Callers can use `max_probe_len` to avoid acquiring a full path, command line,
+or argument string when a bounded prefix decision is enough.
 
 ⸻
 
@@ -169,7 +219,9 @@ io_graph does not claim:
 
 Instead, io_graph claims a narrower runtime property:
 
-The compact cyclic graph should remain the executable kernel/BPF artifact.
+The uploaded policy should remain graph data, and the published kernel object
+should be an execution-shaped compact graph rather than generated control flow
+or a dense transition table.
 
 Existing regex/DFA implementations often build large runtime structures. io_graph targets cases where those structures are the wrong runtime artifact.
 
@@ -205,7 +257,13 @@ The claim is not “best compression ever.”
 
 The claim is:
 
-the compact cyclic graph artifact is the runtime artifact
+verified graph data is the policy artifact
+publication-time compact graph data is the action runtime artifact
+
+The claim is not:
+
+turn every graph into generated BPF code
+make JIT compilation necessary for the first useful result
 
 7.2 Update cost
 
@@ -214,7 +272,7 @@ Graph updates should be whole-object RCU swaps:
 copy new blob
 verify
 build immutable graph object
-optionally build JIT image
+build compact action runtime
 rcu_assign_pointer()
 call_rcu(old, free)
 
@@ -246,17 +304,30 @@ cost(event materialization + ringbuf write + userspace read + rule evaluation)
 
 A matcher that is slower than a hand-written single string compare can still win if it avoids much larger I/O.
 
-7.4 Hot self-loop JIT
+7.4 Runtime-only compaction
 
-A single-state self-loop SCC should be lowered into a native tight loop.
+The verified source blob can remain a simple byte graph, while the published
+runtime object can be normalized for the hot action path.
 
-This is the clearest reason to preserve cyclic structure through runtime.
+For the current v0 prefix workload, the important normalization is:
 
-cyclic graph survives to runtime
-  -> SCC is visible
-  -> JIT can emit scanner-like loop
+verified byte-trie blob
+  -> compact runtime graph
+  -> single-child byte chains become literal-tail edges
+  -> final accepting leaves can become final-action edges
 
-7.5 Runtime memory discipline
+This keeps the UAPI blob easy to verify while making `run_action()` walk the
+smaller runtime object. The byte-trie remains available for `run()` and
+`step()` diagnostics.
+
+7.5 Future hot self-loop JIT
+
+A single-state self-loop SCC can later be lowered into a native tight loop.
+That remains a useful follow-up because preserving cyclic structure through
+runtime keeps the SCC visible, but it is not part of the currently validated
+v0 kernel path.
+
+7.6 Runtime memory discipline
 
 Run path must be:
 
@@ -275,8 +346,8 @@ The hypothesis fails if:
 * cyclic graph blob is not materially smaller than flat tables,
 * graph update is not materially cheaper than BPF program reload,
 * pre-ringbuf filtering does not reduce real I/O,
-* self-loop JIT does not beat generated/hand-written BPF FSM on scanner workloads,
-* JIT image size cancels graph-size savings,
+* compact runtime normalization does not reduce matched-prefix cost or active memory,
+* future JIT image size cancels graph-size savings,
 * branch misses dominate sparse graph walking,
 * real workloads require PCRE/Hyperscan-level expressiveness,
 * run path needs scratch, allocation, captures, or helper calls.
@@ -321,16 +392,20 @@ v0 is intentionally small.
 Included:
 
 * BPF_MAP_TYPE_IOGRAPH-like prototype,
-* compact cyclic graph blob,
+* verified byte-trie graph blob,
 * load-time verifier,
-* interpreter walker,
+* publication-time runtime-only compact graph,
+* literal-run edge compression for single-child byte chains,
+* FINAL_ACTION producer flag and final-action edge returns,
+* allocation-free interpreter walker,
 * experimental bpf_iograph_step() kfunc,
 * experimental bpf_iograph_run_action() kfunc,
 * experimental bpf_iograph_run() kfunc,
-* minimal x86-64 self-loop-focused JIT,
 * RCU whole-graph update,
 * selftests,
-* benchmarks.
+* userspace and Linux selftests benchmarks,
+* LPM_TRIE full-key and bounded-copy baselines,
+* DROP-before-reserve and POST payload rows.
 
 Excluded:
 
@@ -343,13 +418,15 @@ Excluded:
 * certificate model,
 * producer hooks,
 * stable UAPI promise,
-* multi-architecture JIT.
+* multi-architecture JIT,
+* self-loop JIT in the validated v0 kernel path.
 
 The first production-shaped workload is:
 
 high-cardinality exact/prefix path filtering before ringbuf emission
 
 Suffix, contains, captures, and streaming/resumable state are v0.5 or later.
+Self-loop JIT is also a later optimization track; v0 must stand without it.
 
 ⸻
 
@@ -361,20 +438,37 @@ These are v0 engineering targets, not ABI guarantees.
 
 For small cache-resident prefix graphs:
 
-fixed kfunc/run overhead:
-  target 50–150 ns
-interpreted byte processing:
-  target 1–3 ns/byte for L1-resident graph walks
-typical 100-byte path:
-  target 150–500 ns/event
+hook-adjacent compact run_action:
+  target same-hook floor + 50–100 ns for cache-resident prefix policies
+compact runtime graph work in userspace primitive:
+  target low tens of ns for cache-resident exact/prefix decisions
+100-prefix kernel-shaped prefilter:
+  target below 500 ns/event
+1000-prefix kernel-shaped prefilter:
+  target below 1 µs/event
 large graph / L2-resident / branchy path:
   acceptable 500 ns–2 µs/event envelope
-self-loop JIT hot path:
-  target 50–200 ns/event for scanner-like workloads
+future self-loop JIT hot path:
+  scanner-specific follow-up, not part of the prefix-filtering v0 evidence
 
 The target is not to beat every dense DFA transition table.
 
 The target is to beat the full cost of event materialization, ringbuf emission, userspace delivery, and userspace rule evaluation when the event can be rejected early.
+
+Observed compact kernel rows from the current raw tracepoint measurement:
+
+empty same-hook floor:
+  116.04 ns/op
+1000-prefix compact hit:
+  175.59 ns/op
+1000-prefix compact DROP:
+  173.25 ns/op
+1000-prefix compact DROP floor delta:
+  57.21 ns/op
+
+These rows include syscall trigger, raw tracepoint dispatch, BPF program
+execution, map/kfunc plumbing, and compact graph walking. They are not pure
+kfunc microbenchmarks.
 
 11.2 Memory footprint
 
@@ -397,7 +491,8 @@ Activation path:
 
 copy blob
 verify blob
-build immutable object
+inline accept IDs into action codes
+build immutable compact runtime object
 publish with rcu_assign_pointer()
 
 Old graph reclamation is deferred to an RCU grace period and is not counted as policy activation latency.
@@ -417,10 +512,47 @@ BPF LPM_TRIE:
   good precedent for map-backed lookup object
   IP/binary prefix-oriented
   pointer-linked traversal
+  lookup requires key materialization
 io_graph:
   string/prefix byte-sequence graph
-  contiguous index-based traversal
+  direct selector-buffer traversal
+  compact literal-run runtime graph
   map-backed policy object
+
+LPM comparison must include both:
+
+LPM full-key:
+  copy the full fixed scratch key before lookup
+LPM bounded-copy:
+  copy only selector_len bytes before lookup
+io_graph compact:
+  walk the original selector bytes without materializing a lookup key
+
+The current compact kernel measurement beats the same-hook LPM rows for the
+tested path-prefix policies:
+
+100 typical hit:
+  compact          164.31 ns/op
+  LPM bounded-copy 184.95 ns/op
+1000 typical hit:
+  compact          175.59 ns/op
+  LPM bounded-copy 212.40 ns/op
+1000 typical DROP:
+  compact          173.25 ns/op
+  LPM bounded-copy 209.29 ns/op
+1000 shared-prefix hit:
+  compact          174.67 ns/op
+  LPM bounded-copy 304.14 ns/op
+1000 long-path hit:
+  compact          174.70 ns/op
+  LPM bounded-copy 505.31 ns/op
+
+This does not make io_graph a replacement for LPM_TRIE. LPM_TRIE remains the
+correct baseline for pure prefix lookup. io_graph is an action policy object
+that can walk the original selector buffer, publish whole graph updates, and
+decide before ringbuf reservation. Refreshed comparisons must keep the
+bounded-copy LPM rows because LPM needs key materialization while io_graph does
+not.
 
 11.5 Expected wins
 
@@ -440,7 +572,7 @@ Strong expected win:
 high-drop workload:
   10x–100x ringbuf I/O reduction
 self-loop scanner:
-  1.5x–3x faster than hand-written BPF loop
+  future JIT track, not required for the prefix-filtering v0 claim
 
 ⸻
 
@@ -674,7 +806,7 @@ Kernel responsibilities are limited to:
 * verify well-formedness,
 * build immutable graph object,
 * execute interpreter,
-* optionally JIT selected structures,
+* build the publication-time compact runtime graph,
 * RCU-swap graph objects.
 
 The kernel does not verify:
@@ -752,6 +884,43 @@ sym_lo..sym_hi -> dst
 
 This supports byte ranges, character classes, and scanner-like states without expanding to 256 entries.
 
+16.2 Runtime compact graph
+
+After blob verification and accept-code inlining, publication builds a compact
+runtime graph for `run_action()`.
+
+The compact graph is derived data. It is not the uploaded blob format.
+
+Boundary rules:
+
+entry states:
+  remain explicit
+accepting nodes with override potential:
+  remain explicit
+flagged nodes:
+  remain explicit
+consuming else-transition nodes:
+  remain explicit
+fanout nodes:
+  remain explicit
+shared-continuation nodes:
+  remain explicit
+non-accepting single-child byte chains:
+  become literal-tail edges
+terminal FINAL_ACTION leaves:
+  may become final-action compact edges
+
+Literal-tail edge semantics:
+
+1. Edge dispatch matches and consumes the first byte.
+2. The literal tail stores only the remaining bytes.
+3. Tail bytes are compared in one bounded compare.
+4. The compact edge either jumps to a compact node or returns an action code
+   directly when it carries a final action.
+
+This removes the byte-expanded trie walk from the pre-emission hot path while
+keeping the verifier-facing source blob simple.
+
 ⸻
 
 17. Verifier
@@ -784,6 +953,12 @@ The v0 verifier checks well-formedness and safety only.
 * accept_id == 0 or accept_id < accept_cnt,
 * flags known,
 * FINAL_ACTION is only valid on accepting nodes.
+
+`IOG_NODE_F_FINAL_ACTION` is producer-declared semantics. The verifier checks
+only local well-formedness: the flag must be known and attached to an accepting
+node. The verifier does not prove that no longer source-policy override exists.
+For the prefix compiler, the flag is emitted on accepting leaves where the
+producer knows the action is final.
 
 17.4 Edge checks
 
@@ -870,7 +1045,37 @@ final_state
 last_accept_code
 status
 
+In the current implementation, `run()` uses the verified byte-trie path. It is
+kept for validation, diagnostics, and final-state observation.
+
+18.3 Compact action runtime
+
+`run_action()` uses the publication-time compact runtime graph.
+
+Current compact boundaries:
+
+* entry states remain explicit,
+* accepting nodes with outgoing override potential remain explicit,
+* flagged nodes remain explicit,
+* nodes with consuming else transitions remain explicit,
+* fanout nodes remain explicit,
+* shared-continuation nodes remain explicit.
+
+Non-accepting single-child byte chains are folded into literal-tail compact
+edges. The first byte is matched by edge dispatch; only tail bytes are stored
+and compared by the literal edge. A terminal accepting leaf with
+`IOG_NODE_F_FINAL_ACTION` may be carried by the incoming compact edge as an
+immediate action return.
+
+The compact action walker keeps the matched compact edge as a pointer rather
+than returning an edge index and immediately indexing the edge array again.
+This removes a small hot-path intermediate value without changing blob
+semantics.
+
 v0 does not produce captures or variable-sized match lists.
+
+The compact runtime is the primary execution object for pre-emission
+filtering. The byte-trie graph is the verification and diagnostic object.
 
 ⸻
 
@@ -924,7 +1129,7 @@ run_action:
   returns only the DROP/POST/classification answer
   avoids a BPF-side result object for prefilter callers
   amortizes kfunc call overhead
-  enables self-loop JIT
+  walks the compact publication-time runtime graph
   benchmark target
 run:
   final-state observation
@@ -990,8 +1195,8 @@ Update path:
 
 copy blob from userspace
 verify blob
-build immutable graph object
-optionally build JIT image
+inline accept IDs into action codes
+build immutable compact runtime graph
 lock update_lock
 swap graph pointer with rcu_assign_pointer()
 unlock
@@ -1021,11 +1226,33 @@ map_mem_usage must include:
 
 * sizeof(struct bpf_iograph_map),
 * current graph object,
-* nodes,
-* edges,
-* entries,
-* accepts,
-* JIT image.
+* copied verified blob while retained,
+* compact entries,
+* compact nodes,
+* compact edges,
+* literal bytes,
+* future JIT image if one is attached.
+
+Action-only mode:
+
+Some prefilter deployments need only `run_action()`. In that mode, update may
+verify the byte-trie blob, build the compact runtime graph, then discard the
+copied source blob from the active object. `run_action()` continues to work
+from compact runtime data; `run()` and `step()` are unavailable or return a
+diagnostic error. This is implemented in the userspace BPF-shaped harness and
+is a candidate map flag for the kernel prototype.
+
+Observed userspace memory effect:
+
+typical 1000 prefixes:
+  retained source blob + compact runtime: 385,577 B
+  action-only compact runtime:             39,329 B
+shared-prefix 1000:
+  retained source blob + compact runtime: 227,631 B
+  action-only compact runtime:             25,891 B
+long-path 1000:
+  retained source blob + compact runtime:  85,444 B
+  action-only compact runtime:             20,988 B
 
 ⸻
 
@@ -1033,27 +1260,49 @@ map_mem_usage must include:
 
 The kernel may normalize the blob into an immutable object.
 
-struct iog_graph {
+struct bpf_iograph_graph {
     struct rcu_head rcu;
-    u32 node_cnt;
-    u32 edge_cnt;
-    u32 entry_cnt;
-    u32 accept_cnt;
-    u32 alphabet_size;
+
+    /* retained source blob and byte-trie diagnostic views */
+    u32 blob_len;
+    const struct iog_blob_hdr *hdr;
+    const struct iog_node *nodes;
+    const struct iog_edge *edges;
+    const struct iog_entry *entries;
+    const struct iog_accept *accepts;
+
+    /* hot action runtime */
     u32 max_input_len;
-    struct iog_node *nodes;
-    struct iog_edge *edges;
-    struct iog_entry *entries;
-    struct iog_accept *accepts;
-    struct iog_jit_image *jit;
+    bool single_entry;
+    u32 single_entry_id;
+    u32 compact_single_entry_state;
+    struct bpf_iograph_centry *compact_entries;
+    struct bpf_iograph_cnode *compact_nodes;
+    struct bpf_iograph_cedge *compact_edges;
+    u8 *compact_lits;
+
+    /* compact-runtime stats and accounting */
+    u32 compact_node_cnt;
+    u32 compact_edge_cnt;
+    u32 compact_lit_len;
+    u32 compact_literal_edge_cnt;
+    u32 compact_max_literal_len;
+
+    u8 blob[];
 };
+
+The retained byte-trie blob is the verifier-facing artifact and diagnostic
+runtime. The compact arrays are the action hot path. Future JIT images, if
+added, are attached to the immutable graph object but are not required by the
+validated prefix-filtering v0.
 
 Run path must not allocate.
 
 Allowed:
 
 rcu_dereference graph
-read nodes/edges
+read compact nodes/edges/literal tails for run_action()
+read byte-trie nodes/edges for diagnostic run()/step()
 update local state
 return
 
@@ -1084,13 +1333,15 @@ Compared with pointer-linked data structures that mutate subtrees, io_graph uses
 
 ⸻
 
-24. JIT v0
+24. Future Self-Loop JIT Track
 
-v0 JIT is not a general graph JIT.
+The validated v0 prefix-filtering path does not require a JIT. It uses the
+compact publication-time runtime graph.
 
-It supports only structures needed to test the thesis.
+A later self-loop JIT track may support only structures needed to test
+scanner-like cyclic workloads.
 
-24.1 Required lowering
+24.1 Candidate lowering
 
 single-state self-loop SCC -> tight loop
 sparse outgoing edges -> cmp chain
@@ -1100,7 +1351,8 @@ accept/reject return
 
 dense outgoing edges -> jump table
 
-This may be v0.5 if code size grows.
+This should remain separate until the compact interpreter path and pre-emission
+I/O thesis are stable.
 
 24.3 Self-loop target
 
@@ -1119,14 +1371,15 @@ while cursor < end:
     continue
   break_to_exit_dispatch
 
-This is the primary v0 JIT performance claim.
+This is a future scanner performance claim, not a prerequisite for the current
+prefix-filtering evidence.
 
 24.4 JIT lifetime
 
-JIT image lifetime is tied to struct iog_graph.
+JIT image lifetime would be tied to the immutable graph object.
 
 new graph:
-  build JIT image before publish
+  optionally build JIT image before publish
 update:
   publish new graph with rcu_assign_pointer
 old graph:
@@ -1142,12 +1395,18 @@ Interpreter is required.
 It is used for:
 
 * correctness reference,
-* JIT differential testing,
+* compact-runtime differential testing,
+* future JIT differential testing,
 * fallback,
 * debugging,
 * fuzzing.
 
-The interpreter must produce the same trace as the JIT for:
+The byte-trie interpreter and compact action runtime must agree for
+`run_action()`:
+
+byte_trie_action == compact_action
+
+Future JIT-supported graphs must also match the interpreter for:
 
 * state sequence,
 * accept sequence,
@@ -1158,10 +1417,14 @@ The interpreter must produce the same trace as the JIT for:
 
 26. Differential Testing
 
-Every JIT-supported graph must be tested against the interpreter.
+Every compact-runtime graph must be tested against the byte-trie interpreter.
+Every future JIT-supported graph must also be tested against the interpreter.
 
 Test matrix:
 
+* generated prefix sets,
+* shared-prefix sets,
+* long-path prefix sets,
 * random sparse graphs,
 * random self-loop graphs,
 * random consuming-else transitions,
@@ -1172,6 +1435,10 @@ Test matrix:
 * RCU update during execution.
 
 Required property:
+
+byte_trie_run_action == compact_run_action
+
+Future JIT property:
 
 interpreter_trace == jit_trace
 
@@ -1211,6 +1478,27 @@ v0 keeps the attack surface small by design.
 
 28. Benchmarks
 
+Benchmarking must keep three boundaries separate:
+
+policy decision:
+  prebuilt selector bytes + `run_action()`
+selector acquisition:
+  bounded copy/read of only the bytes needed for the decision
+event materialization:
+  full event construction, ringbuf reserve/copy, userspace decode
+
+The central pre-emission claim is tested by comparing:
+
+drop before reserve:
+  selector acquisition -> run_action -> return
+discard after reserve:
+  event reserve/copy -> run_action -> discard
+userspace drop:
+  event reserve/copy -> userspace decode -> userspace rule drop
+
+Rejected events should become 0 ringbuf bytes. POST rows must still pay the
+normal payload materialization cost.
+
 28.1 Baselines
 
 A. hand-written C FSM
@@ -1234,8 +1522,11 @@ Current fallback for many observability agents.
 G. io_graph interpreter
 Reference.
 
-H. io_graph JIT
-Target.
+H. io_graph compact runtime
+Publication-time action hot path.
+
+I. future io_graph self-loop JIT
+Scanner-specific follow-up, not a validated v0 requirement.
 
 If a regex-kfunc baseline is available and reproducible, include it separately.
 
@@ -1247,8 +1538,10 @@ If a regex-kfunc baseline is available and reproducible, include it separately.
 * BPF verifier time,
 * BPF JIT time,
 * io_graph verify time,
-* io_graph JIT time,
+* io_graph compact-build time,
 * update latency,
+* update scratch bytes,
+* peak update bytes,
 * lost invocations during update,
 * transitions/sec,
 * cycles/byte,
@@ -1256,16 +1549,18 @@ If a regex-kfunc baseline is available and reproducible, include it separately.
 * i-cache misses,
 * d-cache misses,
 * ringbuf bytes/sec,
+* ringbuf cachelines/sec,
 * ringbuf drops,
+* selector acquisition bytes,
+* max_prefix_len and max_probe_len,
 * userspace CPU avoided,
 * run-path allocations,
-* per-CPU memory footprint.
+* per-CPU memory footprint,
+* active blob bytes,
+* active compact runtime bytes,
+* action-only active bytes.
 
 28.3 Required experiments
-
-Self-loop scanner:
-
-io_graph JIT must beat or match BPF FSM
 
 Sparse FSM:
 
@@ -1279,9 +1574,29 @@ Pre-ringbuf filtering:
 
 io_graph must reduce ringbuf bytes and/or drops in negative-heavy workloads
 
+POST-side payload rows:
+
+DROP path must reserve 0 B; POST path must report 300 B, 800 B, and 2 KiB
+payload materialization cost on the same hook shape.
+
+LPM comparison:
+
+compare io_graph direct-buffer compact runtime with both full-key and
+bounded-copy LPM lookup rows.
+
+Selector acquisition:
+
+measure decision-only, bounded selector-copy plus decision, and full event
+materialization paths separately.
+
 Many-schema/shared-continuation:
 
 shared continuation must reduce total artifact size
+
+Self-loop scanner:
+
+future JIT track must beat or match BPF FSM before it becomes part of a
+separate scanner claim.
 
 ⸻
 
@@ -1296,7 +1611,11 @@ v0 is successful only if at least one production-shaped workload demonstrates:
 5. Graph-only policy update avoids BPF program reload.
 6. Negative-heavy pre-ringbuf benchmark reduces ringbuf bytes by at least 2x.
 7. Strong benchmark reduces ringbuf bytes by 10x or more.
-8. Self-loop JIT beats or matches hand-written BPF scanner loop on at least one workload.
+8. Compact runtime matched-prefix path is competitive with same-hook LPM_TRIE
+   baselines once LPM key materialization is measured fairly.
+9. DROP-before-reserve rows emit 0 ringbuf bytes for rejected events.
+10. Action-only publication mode materially reduces active graph memory when
+    diagnostic byte-trie `run()` and `step()` are not needed.
 
 ⸻
 
@@ -1310,8 +1629,8 @@ interpreter:
   ~300 lines
 step/run kfuncs:
   ~200 lines
-x86-64 self-loop JIT:
-  ~800-1200 lines
+compact runtime builder:
+  ~300-600 lines
 selftests + benchmark:
   ~600-900 lines
 
@@ -1352,14 +1671,17 @@ v0: Minimal cyclic FSM map
 * graph blob verifier,
 * interpreter,
 * step/run kfuncs,
-* self-loop x86-64 JIT,
+* compact runtime graph for run_action(),
 * RCU whole-graph update,
 * Falco-style pre-ringbuf benchmark,
 * Tetragon-style selector benchmark.
 
-v0.5: Layout and JIT refinement
+Follow-up: Layout and scanner refinement
 
 * small-edge inline nodes, if benchmark proves useful,
+* contiguous compact runtime block,
+* compact node/edge hot/cold split,
+* action-only kernel map flag if diagnostic byte graph is not needed,
 * dense edge jump table,
 * hot SCC-only JIT,
 * better graph memory layout,
@@ -1404,22 +1726,21 @@ Pitch v0 as:
 
 BPF map type for compact cyclic FSM artifacts,
 with allocation-free interpreter, RCU graph replacement,
-and optional self-loop JIT.
+and a publication-time compact action runtime.
 
 Patch structure:
 
 1. bpf: add BPF_MAP_TYPE_IOGRAPH skeleton and UAPI
 2. bpf: iograph cyclic graph blob format and verifier
-3. bpf: iograph interpreter walker
+3. bpf: iograph compact action runtime and interpreter walker
 4. bpf: iograph step/run kfuncs
-5. bpf: iograph x86-64 self-loop JIT
-6. selftests/bpf: verifier and interpreter/JIT equivalence
-7. selftests/bpf: benchmarks against BPF FSM, flat table, LPM_TRIE-style lookup
-8. selftests/bpf: pre-ringbuf filtering benchmark
+5. selftests/bpf: verifier and byte-trie/compact equivalence
+6. selftests/bpf: benchmarks against generated chains, flat table, and LPM_TRIE lookup
+7. selftests/bpf: pre-ringbuf filtering benchmark
 
-Patches 1–4 must be useful without JIT.
+The initial patch set must stand without a JIT.
 
-Patch 5 carries the cyclic-runtime thesis.
+The compact runtime carries the prefix-filtering cyclic-runtime thesis.
 
 The RFC should ideally include one of:
 
@@ -1477,13 +1798,12 @@ The remaining open questions are intentionally narrow.
 1. Should map_update_elem() require fixed value_size == max_blob_size?
 2. Should variable-size graph blobs use a custom update path?
 3. Should run() be required in v0, or is step() enough for the first RFC?
-4. Should dense jump tables be v0 or v0.5?
-5. Should JIT be opt-in per map?
-6. How should bpftool display graph size and JIT size?
-7. Should accept_code be opaque u32 or structured?
-8. Should delete clear the graph or be unsupported?
-9. Which downstream project should be the first design partner?
-10. Can self-loop JIT beat BPF FSM on real workloads?
+4. Should action-only publication be a map flag or a separate map type mode?
+5. Should bpftool display compact runtime size and action-only memory savings?
+6. Should accept_code be opaque u32 or structured?
+7. Should delete clear the graph or be unsupported?
+8. Which downstream project should be the first design partner?
+9. Can a future self-loop JIT beat BPF FSM on real scanner workloads?
 
 ⸻
 
@@ -1504,12 +1824,12 @@ It does not run minimization in kernel.
 
 The initial implementation is a small BPF map type prototype:
 
-* immutable cyclic graph blob,
+* immutable verified byte-trie graph blob,
 * load-time verifier,
+* publication-time compact action runtime,
 * allocation-free walker,
 * experimental step/run_action/run kfuncs,
-* RCU graph replacement,
-* minimal self-loop JIT.
+* RCU graph replacement.
 
 The first production-shaped benchmark is pre-ringbuf filtering for high-volume observability/security agents.
 
@@ -1517,7 +1837,7 @@ Expected v0 envelope:
 
 100 prefixes:
   15–70 KiB blob
-  150–500 ns/event interpreted
+  150–500 ns/event kernel-shaped compact path target
 1000 prefixes:
   150–700 KiB blob
   L2-resident target
@@ -1531,8 +1851,7 @@ The hypothesis is falsifiable:
 
 If cyclic graph artifacts are not smaller,
 if updates are not cheaper,
-if pre-ringbuf filtering does not reduce real I/O,
-or if self-loop JIT does not beat BPF FSM baselines,
+or if pre-ringbuf filtering does not reduce real I/O,
 then io_graph should not become an upstream feature.
 
 The reason to try it is equally clear:

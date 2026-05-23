@@ -1,150 +1,106 @@
 # Native Kernel Current State
 
-Date: 2026-05-21
-
-This file records the current kernel-backed measurement rows. They are separate
-from the frozen userspace proof in `results/userspace/current.md`.
-
-Update note, 2026-05-23: the source tree now builds a runtime compact graph at
-map publication and routes `bpf_iograph_run_action()` through that compact
-graph. The measured rows below predate that change and remain the last
-byte-trie action-kfunc snapshot until a patched kernel is rebuilt, booted, and
-rerun. The selftests bench source now also provides explicit
-`iograph-compact-decision` and `iograph-compact-prefilter` aliases for those
-refreshed rows.
-
-The measured rows below are the last typed-tracepoint snapshot. The bench source
-now uses `raw_tp/sys_enter` and batches producer trigger accounting to remove
-per-trigger bookkeeping from the fixed-cost path; refresh these rows after the
-updated kernel/selftests slice is loaded.
+This file records the latest kernel-backed measurement rows. It is the stable
+native result entrypoint; date-stamped run notes are folded here instead of kept
+as parallel sources of truth.
 
 ## Measurement Shape
 
 - Runtime: WSL2 x86-64 with a booted patched
-  `6.18.26.1-microsoft-standard-WSL2+` kernel.
+  `6.18.26.1-microsoft-standard-WSL2+ #2` kernel.
 - Kernel build shape: stock Microsoft WSL kernel configuration plus the
-  io_graph overlay. The integration changes to existing Linux files stay at the
-  map-type plumbing, privileged map-create allow-list, object list, tools UAPI,
-  and selftests bench registration points.
-- Benchmark path: Linux `tools/testing/selftests/bpf` `bench`
-  `iograph-hook-floor`, `iograph-decision`, `iograph-prefilter`, and LPM
-  decision rows, all attached at `tp_btf/sys_enter` and triggered by repeated
-  `getpgid` syscalls.
-- Policy input: compiled 100-prefix and 1000-prefix `iog_blob` artifacts from
-  the existing prefix generator and `iogc`.
-- Selector input: a preloaded writable BPF global. Path acquisition and path
+  io_graph overlay, built from a disposable Linux worktree.
+- Benchmark path: Linux `tools/testing/selftests/bpf` `bench`, attached at
+  `raw_tp/sys_enter` and triggered by repeated `getpgid` syscalls.
+- Policy input: compiled `iog_blob` artifacts from `iogc`.
+- Selector input: preloaded writable BPF global. Path acquisition and path
   string generation are excluded from these rows.
+- Payload generation: excluded. DROP rows return before ringbuf reservation.
+- POST payload rows: included separately with one producer and one ringbuf
+  consumer, covering 300 B, 800 B, and 2048 B payload copies.
+- PMU: WSL did not expose a CPU PMU device, so branch/cache/L1/LLC counters are
+  unavailable for this run. `perf_event_paranoid` was `1`.
 
-The throughput-derived `ns/op` rows below include the syscall trigger,
-tracepoint dispatch, and BPF program. Graph rows also include map/kfunc graph
-work. They are not a pure in-kernel kfunc microbenchmark.
+The throughput-derived `ns/op` rows include syscall trigger, raw tracepoint
+dispatch, BPF program execution, and graph rows include map/kfunc work. They
+are not a pure in-kernel kfunc microbenchmark.
 
-The DROP rows count completed producer triggers outside BPF. The BPF rejected
-path does not increment a global DROP counter after it already has the answer.
-
-## Fixed-Cost Split
+## Compact Runtime Rows
 
 `iograph-hook-floor` keeps the same attach type and syscall trigger but returns
-from an empty BPF program. It measures the hook-adjacent floor before policy
-lookup:
+from an empty BPF program. `floor_delta_ns` subtracts that empty-hook row.
 
-| row | operations_M/s | throughput_ns/op |
-|:---|---:|---:|
-| empty `tp_btf/sys_enter` BPF hook | 8.351 +/- 0.126 | 119.7 |
+| case | operations_M/s | throughput_ns/op | floor_delta_ns |
+|:---|---:|---:|---:|
+| empty same-hook BPF row | 8.618 +/- 0.185 | 116.04 | 0.00 |
+| 100 typical compact hit | 6.086 +/- 0.050 | 164.31 | 48.27 |
+| 1000 typical compact early miss | 7.683 +/- 0.127 | 130.16 | 14.12 |
+| 1000 typical compact hit | 5.695 +/- 0.131 | 175.59 | 59.55 |
+| 1000 typical compact prefilter DROP | 5.772 +/- 0.028 | 173.25 | 57.21 |
+| 1000 shared-prefix compact hit | 5.725 +/- 0.060 | 174.67 | 58.63 |
+| 1000 long-path compact hit | 5.724 +/- 0.074 | 174.70 | 58.66 |
 
-Action-only graph rows use `iograph-decision`. `floor_delta_ns` subtracts the
-119.7 ns empty-hook row to show the work above attach, syscall trigger, and
-empty BPF dispatch:
-
-| prefixes | selector case | operations_M/s | throughput_ns/op | floor_delta_ns |
-|---:|:---|---:|---:|---:|
-| 100 | early miss `/z` | 7.513 +/- 0.089 | 133.1 | 13.4 |
-| 100 | matched prefix | 2.839 +/- 0.019 | 352.2 | 232.5 |
-| 1000 | early miss `/z` | 7.465 +/- 0.072 | 134.0 | 14.3 |
-| 1000 | matched prefix | 2.810 +/- 0.047 | 355.9 | 236.2 |
-
-The early-miss row is only a few tens of nanoseconds above the same-hook floor.
-That is the visible fixed-cost boundary: the direct C primitive still runs in
-single-digit or low-teens ns for early mismatch, while this tracing row must
-pay syscall trigger, tracepoint dispatch, BPF entry, and kfunc plumbing before
-the graph can return.
-
-## Prefilter DROP Rows
-
-`iograph-prefilter` runs the same action first and reaches DROP before ringbuf
-reservation:
-
-| prefixes | selector case | action path | consumer | operations_M/s | throughput_ns/op |
-|---:|:---|:---|:---|---:|---:|
-| 100 | matched prefix | action-only DROP before reserve | no | 2.853 +/- 0.009 | 350.5 |
-| 1000 | matched prefix | action-only DROP before reserve | no | 2.846 +/- 0.007 | 351.4 |
-
-The matched DROP rows returned from the BPF program before
-`bpf_ringbuf_reserve()`, so rejected events contribute 0 ringbuf bytes in this
-kernel-backed path. POST-side payload copy rows stay in the userspace event
-path matrix until the kernel bench grows a payload materialization mode.
-
-The prefilter rows now sit on the action decision rows rather than paying a
-benchmark-only BPF DROP counter after the decision. Prefix-count growth from
-100 to 1000 still does not move the matched graph row materially on this
-generated policy set.
-
-## Userspace Comparison
-
-The userspace primitive has no syscall trigger, attach dispatch, or kfunc
-boundary. The latest direct action rows are recorded in
-`results/userspace/current.md`:
-
-| prefixes | selector case | direct C ns/op | kernel hook-adjacent ns/op |
-|---:|:---|---:|---:|
-| 100 | early miss | 11.24 | 133.1 |
-| 100 | matched prefix / hit | 223.79 | 352.2 |
-| 1000 | early miss | 7.17 | 134.0 |
-| 1000 | matched prefix / hit | 234.00 | 355.9 |
-
-The comparison says where to optimize next. Graph traversal explains most of
-the matched-prefix delta above the 119.7 ns hook floor. It does not explain the
-early-miss tracing row; that row is already fixed-cost dominated.
+The previous byte-trie kernel snapshot had matched decisions around
+352-356 ns/op. The compact runtime brings matched decisions down to
+164-176 ns/op on the same raw-tracepoint measurement shape.
 
 ## Same-Bench LPM Trie
 
 `iograph-lpm-decision` runs the same selector and attach/trigger path through
-`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so this bench
-uses one per-CPU scratch key object before the LPM helper call.
+`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so the full-key
+row copies the full 256 B selector cap before the LPM helper call. The
+bounded-copy row copies only `selector_len` bytes.
 
-| prefixes | matched decision matcher | operations_M/s | throughput_ns/op | io_graph_ns / lpm_ns |
-|---:|:---|---:|---:|---:|
-| 100 | io_graph action kfunc | 2.839 +/- 0.019 | 352.2 | 1.46 |
-| 100 | LPM trie | 4.155 +/- 0.030 | 240.7 | 1.00 |
-| 1000 | io_graph action kfunc | 2.810 +/- 0.047 | 355.9 | 1.22 |
-| 1000 | LPM trie | 3.438 +/- 0.015 | 290.9 | 1.00 |
+| case | compact ns/op | LPM full-key ns/op | LPM bounded-copy ns/op | compact vs bounded |
+|:---|---:|---:|---:|---:|
+| 100 typical hit | 164.31 | 212.18 | 184.95 | 1.13x |
+| 1000 typical hit | 175.59 | 250.69 | 212.40 | 1.21x |
+| 1000 typical prefilter DROP | 173.25 | 254.65 | 209.29 | 1.21x |
+| 1000 shared-prefix hit | 174.67 | 319.69 | 304.14 | 1.74x |
+| 1000 long-path hit | 174.70 | 516.00 | 505.31 | 2.89x |
 
-For plain bounded path-prefix matching, this LPM baseline is currently faster
-in the hook-adjacent WSL bench. The io_graph case here is representation and
-execution-order evidence, not a claim that the first graph interpreter beats
-the existing LPM helper on its home workload.
+Bounded-copy LPM materially improves the short-selector rows, but compact
+`io_graph` still beats the same-hook LPM baseline for this prefix workload.
 
-## Validation
+## POST Payload Rows
+
+These rows include ringbuf reservation, payload copy, and one ringbuf consumer.
+They show the cost paid for POST events; DROP rows above return before reserve.
+
+| payload_B | ringbuf_record_B | compact POST M/s | compact POST ns/op | always POST M/s | always POST ns/op |
+|---:|---:|---:|---:|---:|---:|
+| 300 | 344 | 2.164 +/- 0.070 | 462.11 | 2.581 +/- 0.107 | 387.45 |
+| 800 | 840 | 1.658 +/- 0.017 | 603.14 | 1.807 +/- 0.018 | 553.40 |
+| 2048 | 2088 | 0.987 +/- 0.013 | 1013.17 | 1.024 +/- 0.030 | 976.56 |
+
+## Validation Notes
 
 - `bench iograph-hook-floor` loaded the same skeleton and attached the empty
-  tracing BPF floor row.
-- `bench iograph-decision` and `bench iograph-prefilter` loaded the
-  `BPF_MAP_TYPE_IOGRAPH` policy map, updated it with compiled graph blobs,
-  attached tracing BPF programs, and ran 100-prefix and 1000-prefix policies.
-- `bench iograph-lpm-decision` loaded the same 100-prefix and 1000-prefix text
-  prefix sets into an LPM trie baseline on the same tracing path.
-- The current tree also compiles the kfunc objects after removing the nested
-  per-decision RCU lock; the rows above were collected on the already booted
-  patched WSL image before a relink/reboot of that kernel object change.
-- Repository C tests passed with `make test`.
-- Building the full Linux `test_progs` runner stopped before the io_graph test
-  at an unrelated `bpf_qdisc_fail__incompl_ops` BPF compile failure in this WSL
-  toolchain path. The io_graph selftest remains present, but this run does not
-  claim a `test_progs -t iograph` result.
+  raw tracepoint BPF floor row.
+- `bench iograph-compact-decision` and `bench iograph-compact-prefilter`
+  loaded `BPF_MAP_TYPE_IOGRAPH`, updated it with compiled graph blobs, and ran
+  100/1000-prefix typical policies plus 1000-prefix shared/long-path policies.
+- `bench iograph-lpm-decision` and `bench iograph-lpm-prefilter` loaded the
+  corresponding prefix text files into an LPM trie baseline on the same raw
+  tracepoint path.
+- `bench iograph-lpm-bounded-decision` and
+  `bench iograph-lpm-bounded-prefilter` measured selector-length-only LPM key
+  materialization.
+- `bench iograph-compact-post-payload` and `bench iograph-ringbuf-always-post`
+  measured POST-side payload materialization with a ringbuf consumer.
+- The compact prefilter DROP row returned before `bpf_ringbuf_reserve()`, so
+  rejected events contributed 0 ringbuf bytes in this bench path.
+- The WSL environment exposes no CPU PMU device. Branch/cache/L1/LLC
+  `perf_event_open` rows remain native-host work.
 
-## PMU Status
+## Historical Byte-Trie Snapshot
 
-The measurement kernel had `perf_event_paranoid=2`, but WSL did not expose
-`/sys/bus/event_source/devices/cpu/type`. Branch/cache/L1/LLC
-`perf_event_open` rows therefore remain unavailable for this kernel-backed run.
-A native Linux host or PMU-visible VM is still needed for those counters.
+The pre-compact kernel snapshot is retained in git history and summarized here
+only for comparison:
+
+| prefixes | selector case | byte-trie ns/op | LPM ns/op |
+|---:|:---|---:|---:|
+| 100 | matched prefix | 352.2 | 240.7 |
+| 1000 | matched prefix | 355.9 | 290.9 |
+
+Those rows are no longer the current `run_action()` path.

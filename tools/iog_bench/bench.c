@@ -29,6 +29,7 @@
 #define QUANTILE_NR 1024u
 #define BPF_RINGBUF_HDR_SZ_MODEL IOG_BENCH_RINGBUF_HDR_SZ_MODEL
 #define BPF_RINGBUF_CAP_MODEL IOG_BENCH_RINGBUF_CAP_MODEL
+#define CACHELINE_SZ_MODEL 64u
 
 struct iog_run_state_size_probe {
 	u32 state;
@@ -69,8 +70,14 @@ struct payload_result {
 
 struct update_result {
 	double verify_us;
+	double compact_build_us;
 	double update_us;
 	double reclaim_us;
+	u64 update_scratch_bytes;
+	u64 peak_new_update_bytes;
+	u64 peak_with_retired_bytes;
+	u64 active_blob_bytes;
+	u64 active_compact_bytes;
 	u64 active_mem_bytes;
 	u64 retired_mem_bytes;
 	u64 total_mem_bytes;
@@ -81,8 +88,12 @@ struct update_result {
 
 struct map_ops_result {
 	u64 mem_usage_bytes;
+	u64 action_only_mem_usage_bytes;
 	u64 update_seq;
 	long update_ret;
+	long action_only_update_ret;
+	u32 action_only_run_action;
+	long action_only_run_ret;
 	long delete_ret;
 	long lookup_unsupported;
 	long next_key_unsupported;
@@ -130,6 +141,11 @@ static u8 *ringbuf_reserve_state_reserve(struct ringbuf_reserve_state *rb,
 static void ringbuf_reserve_state_commit_and_drain(struct ringbuf_reserve_state *rb)
 {
 	rb->consumer_pos = rb->producer_pos;
+}
+
+static u64 cachelines_for_bytes(size_t bytes)
+{
+	return (bytes + CACHELINE_SZ_MODEL - 1u) / CACHELINE_SZ_MODEL;
 }
 
 static u64 nsec_now(void)
@@ -669,6 +685,178 @@ bench_bpf_event_path(const struct run_ctx *ctx, const struct sample *samples,
 	return res;
 }
 
+static struct bench_result
+bench_selector_acquire_decision(const struct run_ctx *ctx,
+				const struct sample *samples, size_t sample_nr,
+				u32 probe_len, bool bounded_probe,
+				u64 iterations, double *copied_b_op)
+{
+	struct bench_result res;
+	u8 buf[sizeof(samples[0].bytes)];
+	u64 start_ns, end_ns, start_cycles, end_cycles;
+	u64 copied = 0;
+	u64 i;
+	u32 local = 0;
+
+	for (i = 0; i < 32768; i++) {
+		const struct sample *s = &samples[i & (sample_nr - 1)];
+		u32 len = s->len;
+
+		if (bounded_probe && len > probe_len)
+			len = probe_len;
+		if (len > sizeof(buf))
+			len = sizeof(buf);
+		memcpy(buf, s->bytes, len);
+		local ^= iog_bpf_kfunc_run_action(ctx->bpf_map, buf, len, 0);
+	}
+	sink32 = local;
+
+	start_cycles = rdtsc_now();
+	start_ns = nsec_now();
+	for (i = 0; i < iterations; i++) {
+		const struct sample *s = &samples[i & (sample_nr - 1)];
+		u32 len = s->len;
+
+		if (bounded_probe && len > probe_len)
+			len = probe_len;
+		if (len > sizeof(buf))
+			len = sizeof(buf);
+		memcpy(buf, s->bytes, len);
+		copied += len;
+		local ^= iog_bpf_kfunc_run_action(ctx->bpf_map, buf, len, 0);
+	}
+	end_ns = nsec_now();
+	end_cycles = rdtsc_now();
+	sink32 = local;
+
+	memset(&res, 0, sizeof(res));
+	res.ns_op = (double)(end_ns - start_ns) / (double)iterations;
+	if (HAVE_RDTSC && end_cycles > start_cycles)
+		res.cycles_op = (double)(end_cycles - start_cycles) /
+				(double)iterations;
+	else
+		res.cycles_op = -1.0;
+	res.branch_miss_op = -1.0;
+	res.cache_miss_op = -1.0;
+	res.l1d_miss_op = -1.0;
+	res.llc_miss_op = -1.0;
+	if (copied_b_op)
+		*copied_b_op = (double)copied / (double)iterations;
+	return res;
+}
+
+static struct bench_result
+bench_discard_after_reserve(const struct run_ctx *ctx,
+			    const struct sample *samples, size_t sample_nr,
+			    u32 payload, u64 iterations,
+			    double *reserved_ringbuf_b_op,
+			    double *emitted_ringbuf_b_op,
+			    double *reserve_fail_op)
+{
+	struct bench_result res;
+	struct ringbuf_reserve_state rb;
+	u8 *src, *ring;
+	size_t rec_bytes = ringbuf_record_bytes(payload);
+	size_t cap = BPF_RINGBUF_CAP_MODEL;
+	size_t backing_cap = cap + rec_bytes;
+	u64 start_ns, end_ns, start_cycles, end_cycles;
+	u64 reserved_bytes = 0, emitted_bytes = 0;
+	u64 i;
+	u64 local = 0;
+
+	src = malloc(payload);
+	ring = malloc(backing_cap);
+	if (!src || !ring) {
+		perror("malloc");
+		exit(2);
+	}
+	fill_payload(src, payload);
+	memset(ring, 0, backing_cap);
+	ringbuf_reserve_state_init(&rb, BPF_RINGBUF_CAP_MODEL);
+
+	for (i = 0; i < 32768; i++) {
+		const struct sample *s = &samples[i & (sample_nr - 1)];
+		u8 *slot = ringbuf_reserve_state_reserve(&rb, ring, rec_bytes);
+		struct event_record *rec;
+		u32 action;
+
+		if (!slot)
+			continue;
+		rec = ringbuf_event_at(slot);
+		rec->ts_ns = i;
+		rec->pid_tgid = 0x12340000ull + i;
+		rec->event_type = 0;
+		rec->payload_len = payload;
+		rec->selector_off = 0;
+		rec->selector_len = s->len < payload ? s->len : payload;
+		memcpy(rec->payload, src, payload);
+		action = iog_bpf_kfunc_run_action(ctx->bpf_map, s->bytes,
+						  s->len, 0);
+		local += action + rec->selector_len;
+		ringbuf_reserve_state_commit_and_drain(&rb);
+	}
+	sink64 = local;
+
+	start_cycles = rdtsc_now();
+	start_ns = nsec_now();
+	for (i = 0; i < iterations; i++) {
+		const struct sample *s = &samples[i & (sample_nr - 1)];
+		u8 *slot = ringbuf_reserve_state_reserve(&rb, ring, rec_bytes);
+		struct event_record *rec;
+		u32 action;
+
+		if (!slot) {
+			local += s->len;
+			continue;
+		}
+		rec = ringbuf_event_at(slot);
+		rec->ts_ns = i;
+		rec->pid_tgid = 0x12340000ull + i;
+		rec->event_type = 0;
+		rec->payload_len = payload;
+		rec->selector_off = 0;
+		rec->selector_len = s->len < payload ? s->len : payload;
+		memcpy(rec->payload, src, payload);
+		reserved_bytes += rec_bytes;
+		action = iog_bpf_kfunc_run_action(ctx->bpf_map, s->bytes,
+						  s->len, 0);
+		if (action) {
+			rec->event_type = action;
+			emitted_bytes += rec_bytes;
+		}
+		local += rec->payload[0] + rec->selector_len + action;
+		ringbuf_reserve_state_commit_and_drain(&rb);
+	}
+	end_ns = nsec_now();
+	end_cycles = rdtsc_now();
+	sink64 = local;
+
+	memset(&res, 0, sizeof(res));
+	res.ns_op = (double)(end_ns - start_ns) / (double)iterations;
+	if (HAVE_RDTSC && end_cycles > start_cycles)
+		res.cycles_op = (double)(end_cycles - start_cycles) /
+				(double)iterations;
+	else
+		res.cycles_op = -1.0;
+	res.branch_miss_op = -1.0;
+	res.cache_miss_op = -1.0;
+	res.l1d_miss_op = -1.0;
+	res.llc_miss_op = -1.0;
+	if (reserved_ringbuf_b_op)
+		*reserved_ringbuf_b_op = (double)reserved_bytes /
+					 (double)iterations;
+	if (emitted_ringbuf_b_op)
+		*emitted_ringbuf_b_op = (double)emitted_bytes /
+					(double)iterations;
+	if (reserve_fail_op)
+		*reserve_fail_op = (double)rb.reserve_fail /
+				   (double)(iterations + 32768u);
+
+	free(ring);
+	free(src);
+	return res;
+}
+
 static void print_metric(double value)
 {
 	if (value < 0.0)
@@ -760,22 +948,50 @@ static void print_bpf_event_path_row(size_t prefixes, const char *case_name,
 	       reserve_fail_op);
 }
 
+static void print_selector_acquisition_row(size_t prefixes,
+					   const char *case_name,
+					   const char *mode, u32 probe_len,
+					   const struct bench_result *res,
+					   double copied_b_op)
+{
+	printf("| %zu | %s | %s | %u | %.2f | %.2f | ", prefixes,
+	       case_name, mode, probe_len, copied_b_op, res->ns_op);
+	print_metric(res->cycles_op);
+	printf(" | 0 |\n");
+}
+
+static void print_drop_order_row(size_t prefixes, const char *case_name,
+				 u32 payload, const char *order,
+				 const struct bench_result *res,
+				 double reserved_b_op, double emitted_b_op,
+				 double reserve_fail_op)
+{
+	printf("| %zu | %s | %u | %s | %.2f | ", prefixes, case_name,
+	       payload, order, res->ns_op);
+	print_metric(res->cycles_op);
+	printf(" | %.2f | %.2f | %.6f | 0 |\n", reserved_b_op, emitted_b_op,
+	       reserve_fail_op);
+}
+
 static void print_io_accounting_rows(void)
 {
 	size_t i;
 
 	printf("\nio-aware object accounting\n");
-	printf("| payload_B | event_record_B | bpf_ringbuf_record_B | decoded_event_B | postdrop_intermediate_B | iog_run_state_B | drop_path_ringbuf_B |\n");
-	printf("|---:|---:|---:|---:|---:|---:|---:|\n");
+	printf("| payload_B | event_record_B | bpf_ringbuf_record_B | ringbuf_cachelines | decoded_event_B | postdrop_intermediate_B | iog_run_state_B | drop_path_ringbuf_B | avoided_dirty_cachelines_per_1M_95pct_drop |\n");
+	printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 	for (i = 0; i < ARRAY_SIZE(payloads); i++) {
 		u32 payload = payloads[i];
+		size_t record = ringbuf_record_bytes(payload);
+		u64 cachelines = cachelines_for_bytes(record);
 
-		printf("| %u | %zu | %zu | %zu | %zu | %zu | 0 |\n",
+		printf("| %u | %zu | %zu | %" PRIu64 " | %zu | %zu | %zu | 0 | %.2fM/s |\n",
 		       payload, event_record_bytes(payload),
-		       ringbuf_record_bytes(payload),
+		       record, cachelines,
 		       sizeof(struct decoded_event),
 		       postdrop_intermediate_bytes(payload),
-		       sizeof(struct iog_run_state_size_probe));
+		       sizeof(struct iog_run_state_size_probe),
+		       (double)cachelines * 950000.0 / 1000000.0);
 	}
 }
 
@@ -783,8 +999,11 @@ static struct update_result bench_update(const void *blob, size_t blob_len,
 					 u64 iterations)
 {
 	struct update_result result;
+	struct iog_cgraph *compact = NULL;
+	struct iog_graph graph;
 	struct iog_map map;
 	u64 start_ns, end_ns, reclaim_start_ns, reclaim_end_ns;
+	void *copy;
 	u64 i;
 	char err[256];
 	int ret;
@@ -802,6 +1021,39 @@ static struct update_result bench_update(const void *blob, size_t blob_len,
 	}
 	result.verify_us = (double)(end_ns - start_ns) / 1000.0;
 
+	copy = malloc(blob_len);
+	if (!copy) {
+		perror("malloc");
+		exit(2);
+	}
+	memcpy(copy, blob, blob_len);
+	ret = iog_graph_from_blob(&graph, copy, blob_len, &iog_default_limits,
+				  err, sizeof(err));
+	if (ret) {
+		fprintf(stderr, "graph load failed in update bench: %s\n", err);
+		exit(1);
+	}
+	ret = iog_graph_inline_accept_codes(&graph);
+	if (ret) {
+		fprintf(stderr, "accept inline failed in update bench: %d\n",
+			ret);
+		exit(1);
+	}
+	result.update_scratch_bytes =
+		(u64)graph.hdr->node_cnt *
+		(sizeof(bool) + 2u * sizeof(u32));
+	start_ns = nsec_now();
+	ret = iog_cgraph_new(&graph, &compact);
+	end_ns = nsec_now();
+	if (ret) {
+		fprintf(stderr, "compact build failed in update bench: %d\n",
+			ret);
+		exit(1);
+	}
+	result.compact_build_us = (double)(end_ns - start_ns) / 1000.0;
+	iog_cgraph_free(compact);
+	free(copy);
+
 	iog_map_init(&map);
 	start_ns = nsec_now();
 	for (i = 0; i < iterations; i++) {
@@ -817,11 +1069,20 @@ static struct update_result bench_update(const void *blob, size_t blob_len,
 
 	result.update_us = ((double)(end_ns - start_ns) / 1000.0) /
 			   (double)iterations;
+	if (map.graph) {
+		result.active_blob_bytes = map.graph->blob_len;
+		result.active_compact_bytes =
+			iog_cgraph_mem_bytes(map.graph->compact);
+	}
 	result.active_mem_bytes = iog_map_active_mem_usage(&map);
 	result.retired_mem_bytes = iog_map_retired_mem_usage(&map);
 	result.total_mem_bytes = iog_map_mem_usage(&map);
 	result.update_seq = map.update_seq;
 	result.retired_graphs = map.retired_cnt;
+	result.peak_new_update_bytes = result.active_mem_bytes +
+				       result.update_scratch_bytes;
+	result.peak_with_retired_bytes = result.total_mem_bytes +
+					 result.update_scratch_bytes;
 
 	reclaim_start_ns = nsec_now();
 	result.reclaimed_graphs = iog_map_reclaim(&map);
@@ -838,6 +1099,7 @@ static struct map_ops_result exercise_bpf_map_ops(const void *blob,
 {
 	struct map_ops_result result;
 	struct iog_bpf_map *map = NULL;
+	struct iog_bpf_map *action_only = NULL;
 	struct iog_bpf_attr attr = {
 		.key_size = IOG_BPF_KEY_SIZE,
 		.value_size = (u32)blob_len,
@@ -875,6 +1137,30 @@ static struct map_ops_result exercise_bpf_map_ops(const void *blob,
 	result.reclaimed_graphs = iog_map_reclaim(&map->map);
 
 	iog_bpf_map_ops.map_free(map);
+
+	attr.map_flags = IOG_BPF_F_ACTION_ONLY;
+	ret = iog_bpf_map_ops.map_alloc(&attr, &action_only);
+	if (ret) {
+		fprintf(stderr, "action-only bpf map alloc failed: %d\n", ret);
+		exit(1);
+	}
+	result.action_only_update_ret =
+		iog_bpf_map_ops.map_update_elem(action_only, &key, blob,
+						IOG_BPF_ANY, err,
+						sizeof(err));
+	if (result.action_only_update_ret) {
+		fprintf(stderr, "action-only bpf map update failed: %s\n", err);
+		exit(1);
+	}
+	result.action_only_mem_usage_bytes =
+		iog_bpf_map_ops.map_mem_usage(action_only);
+	result.action_only_run_action =
+		iog_bpf_kfunc_run_action(action_only,
+					 (const u8 *)"/no/such/prefix", 15, 0);
+	result.action_only_run_ret =
+		iog_bpf_kfunc_run(action_only, (const u8 *)"/no/such/prefix",
+				  15, 0, &(struct iog_run_result){ 0 });
+	iog_bpf_map_ops.map_free(action_only);
 	return result;
 }
 
@@ -1113,6 +1399,9 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 				double after_bps = before_bps * post;
 				double avoided_intermediate_bps =
 					(double)rates[r] * drop * intermediate_bytes;
+				double avoided_dirty_cachelines =
+					(double)rates[r] * drop *
+					(double)cachelines_for_bytes((size_t)rec_bytes);
 				double iog_cores = (double)rates[r] * iog_pre_ns / 1e9;
 				double compact_cores =
 					(double)rates[r] * compact_pre_ns / 1e9;
@@ -1126,13 +1415,14 @@ static void print_estimate_rows(size_t prefixes, const char *neg_case,
 				double compact_saved =
 					postdrop_cores - compact_cores;
 
-				printf("| %zu | %s | %u | %.0f | %u | %.2f | %.2f | %.2f | %.2f | %.1f | %.3f | %.1f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.2f |\n",
+				printf("| %zu | %s | %u | %.0f | %u | %.2f | %.2f | %.2f | %.2f | %.2f | %.1f | %.3f | %.1f | %.3f | %.3f | %.3f | %.3f | %.3f | %.3f | %.2f | %.2f |\n",
 				       prefixes, neg_case, rates[r], drop * 100.0,
 				       copies[p].payload,
 				       before_bps / 1000000.0,
 				       after_bps / 1000000.0,
 				       before_bps / after_bps,
 				       avoided_intermediate_bps / 1000000.0,
+				       avoided_dirty_cachelines / 1000000.0,
 				       iog_pre_ns,
 				       iog_cores,
 				       compact_pre_ns,
@@ -1342,11 +1632,12 @@ int main(int argc, char **argv)
 		printf("case prefixes=%zu iterations=%" PRIu64 "\n", counts[ci],
 		       iterations);
 		printf("\nartifact sizes\n");
-		printf("| prefixes | avg_len | states | edges | iog_blob_B | compact_runtime_B | dense_table_B | gen_chain_src_B | gen_chain_bpf_est_B | list_payload_B | dense/iog | gen_bpf/iog | blob/compact |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %.1f | %" PRIu32 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %.1f | %.1f | %.2f |\n",
+		printf("| prefixes | avg_len | max_prefix_len | max_probe_len | states | edges | iog_blob_B | compact_runtime_B | dense_table_B | gen_chain_src_B | gen_chain_bpf_est_B | list_payload_B | dense/iog | gen_bpf/iog | blob/compact |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %.1f | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %.1f | %.1f | %.2f |\n",
 		       counts[ci],
 		       (double)wl.prefix_bytes / (double)wl.nr,
+		       stats.max_prefix_len, stats.max_probe_len,
 		       stats.node_cnt, stats.edge_cnt, stats.blob_bytes,
 		       compact_stats.mem_bytes, stats.dense_table_bytes,
 		       stats.gen_chain_source_bytes,
@@ -1388,24 +1679,31 @@ int main(int argc, char **argv)
 		printf(" | %" PRIu64 " |\n", compact_stats.mem_bytes);
 
 		printf("\nbpf map update\n");
-		printf("| prefixes | verify_us | map_update_us | update_iters | active_mem_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %.2f | %.2f | %" PRIu64 " | %" PRIu64 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %.2f | %" PRIu32 " | %" PRIu64 " |\n",
-		       counts[ci], update.verify_us, update.update_us,
-		       update_iters, update.active_mem_bytes,
+		printf("| prefixes | verify_us | compact_build_us | map_update_us | update_iters | active_blob_B | active_compact_B | active_total_B | update_scratch_B | peak_new_update_B | retired_graphs | retired_mem_B | peak_with_retired_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %.2f | %.2f | %.2f | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %" PRIu32 " | %" PRIu64 " | %" PRIu64 " | %" PRIu64 " | %.2f | %" PRIu32 " | %" PRIu64 " |\n",
+		       counts[ci], update.verify_us, update.compact_build_us,
+		       update.update_us, update_iters, update.active_blob_bytes,
+		       update.active_compact_bytes, update.active_mem_bytes,
+		       update.update_scratch_bytes, update.peak_new_update_bytes,
 		       update.retired_graphs, update.retired_mem_bytes,
+		       update.peak_with_retired_bytes,
 		       update.total_mem_bytes, update.reclaim_us,
 		       update.reclaimed_graphs, update.update_seq);
 
 		printf("\nbpf map ops\n");
-		printf("| prefixes | key_size | value_size | max_entries | update_ret | lookup_ret | get_next_key_ret | delete_ret | mem_usage_B | update_seq | retired_after_delete | reclaimed_graphs |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %u | %zu | %u | %ld | %ld | %ld | %ld | %" PRIu64 " | %" PRIu64 " | %" PRIu32 " | %" PRIu32 " |\n",
+		printf("| prefixes | key_size | value_size | max_entries | update_ret | lookup_ret | get_next_key_ret | delete_ret | mem_usage_B | action_only_update_ret | action_only_mem_usage_B | action_only_run_action | action_only_run_ret | update_seq | retired_after_delete | reclaimed_graphs |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %u | %zu | %u | %ld | %ld | %ld | %ld | %" PRIu64 " | %ld | %" PRIu64 " | %" PRIu32 " | %ld | %" PRIu64 " | %" PRIu32 " | %" PRIu32 " |\n",
 		       counts[ci], IOG_BPF_KEY_SIZE, blob_len,
 		       IOG_BPF_MAX_ENTRIES, map_ops.update_ret,
 		       map_ops.lookup_unsupported, map_ops.next_key_unsupported,
 		       map_ops.delete_ret, map_ops.mem_usage_bytes,
-		       map_ops.update_seq, map_ops.retired_graphs_after_delete,
+		       map_ops.action_only_update_ret,
+		       map_ops.action_only_mem_usage_bytes,
+		       map_ops.action_only_run_action,
+		       map_ops.action_only_run_ret, map_ops.update_seq,
+		       map_ops.retired_graphs_after_delete,
 		       map_ops.reclaimed_graphs);
 
 		early.iog = bench_match(&ctx, wl.early, SAMPLE_NR,
@@ -1446,7 +1744,7 @@ int main(int argc, char **argv)
 		printf("| prefixes | case | matcher | mean_ns/op | batch_p95_ns/op | batch_p99_ns/op | batch_p999_ns/op | cycles/op | branch_miss/op | l1d_miss/op | llc_miss/op | run_allocs |\n");
 		printf("|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 
-		print_decision_row(counts[ci], "early_miss", "io_graph",
+		print_decision_row(counts[ci], "early_miss", "io_graph_byte_trie",
 				   &early.iog);
 		print_decision_row(counts[ci], "early_miss",
 				   "io_graph_compact_chain", &early.compact);
@@ -1454,7 +1752,7 @@ int main(int argc, char **argv)
 				   &early.chain);
 		print_decision_row(counts[ci], "early_miss", "list_loop",
 				   &early.list);
-		print_decision_row(counts[ci], "late_miss", "io_graph",
+		print_decision_row(counts[ci], "late_miss", "io_graph_byte_trie",
 				   &late.iog);
 		print_decision_row(counts[ci], "late_miss",
 				   "io_graph_compact_chain", &late.compact);
@@ -1462,7 +1760,8 @@ int main(int argc, char **argv)
 				   &late.chain);
 		print_decision_row(counts[ci], "late_miss", "list_loop",
 				   &late.list);
-		print_decision_row(counts[ci], "hit", "io_graph", &hit.iog);
+		print_decision_row(counts[ci], "hit", "io_graph_byte_trie",
+				   &hit.iog);
 		print_decision_row(counts[ci], "hit",
 				   "io_graph_compact_chain", &hit.compact);
 		print_decision_row(counts[ci], "hit", "gen_chain", &hit.chain);
@@ -1475,7 +1774,7 @@ int main(int argc, char **argv)
 		print_matched_path_row(counts[ci],
 				       dataset == WORKLOAD_LONG_PATH ?
 				       "exact_long_match" : "exact_short_match",
-				       "io_graph_accept_inline_last_accept",
+				       "io_graph_byte_trie_last_accept",
 				       &exact_match,
 				       sample_mean_len(wl.exact, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
@@ -1489,12 +1788,12 @@ int main(int argc, char **argv)
 					       compact, wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci],
 				       "prefix_accept_early_return",
-				       "io_graph_accept_inline_first_final_action",
+				       "io_graph_byte_trie_first_final_action",
 				       &prefix_first_action,
 				       sample_mean_len(wl.hit, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci], "prefix_longest_match",
-				       "io_graph_accept_inline_last_accept", &hit.iog,
+				       "io_graph_byte_trie_last_accept", &hit.iog,
 				       sample_mean_len(wl.hit, SAMPLE_NR),
 				       sample_mean_len(wl.exact, SAMPLE_NR));
 		print_matched_path_row(counts[ci], "prefix_longest_match",
@@ -1502,6 +1801,67 @@ int main(int argc, char **argv)
 				       sample_mean_len(wl.hit, SAMPLE_NR),
 				       sample_mean_compact_transitions(
 					       compact, wl.hit, SAMPLE_NR));
+
+		printf("\nselector acquisition + compact decision, prefixes=%zu\n",
+		       counts[ci]);
+		printf("acquisition_model=bounded_memcpy_before_run_action max_probe_len=min(max_input_len,max_prefix_len+1)\n");
+		printf("| prefixes | case | acquisition | probe_len | copied_B/op | ns/op | cycles/op | run_allocs |\n");
+		printf("|---:|:---|:---|---:|---:|---:|---:|---:|\n");
+		{
+			struct bench_result acq;
+			double copied_b_op;
+
+			acq = bench_selector_acquire_decision(&ctx, wl.early,
+							      SAMPLE_NR, 256,
+							      false, iterations,
+							      &copied_b_op);
+			print_selector_acquisition_row(counts[ci], "early_miss",
+						       "full_selector_copy",
+						       256, &acq, copied_b_op);
+			acq = bench_selector_acquire_decision(&ctx, wl.early,
+							      SAMPLE_NR,
+							      stats.max_probe_len,
+							      true, iterations,
+							      &copied_b_op);
+			print_selector_acquisition_row(counts[ci], "early_miss",
+						       "bounded_probe_copy",
+						       stats.max_probe_len,
+						       &acq, copied_b_op);
+
+			acq = bench_selector_acquire_decision(&ctx, wl.late,
+							      SAMPLE_NR, 256,
+							      false, iterations,
+							      &copied_b_op);
+			print_selector_acquisition_row(counts[ci], "late_miss",
+						       "full_selector_copy",
+						       256, &acq, copied_b_op);
+			acq = bench_selector_acquire_decision(&ctx, wl.late,
+							      SAMPLE_NR,
+							      stats.max_probe_len,
+							      true, iterations,
+							      &copied_b_op);
+			print_selector_acquisition_row(counts[ci], "late_miss",
+						       "bounded_probe_copy",
+						       stats.max_probe_len,
+						       &acq, copied_b_op);
+
+			acq = bench_selector_acquire_decision(&ctx, wl.hit,
+							      SAMPLE_NR, 256,
+							      false, iterations,
+							      &copied_b_op);
+			print_selector_acquisition_row(counts[ci], "hit",
+						       "full_selector_copy",
+						       256, &acq, copied_b_op);
+			acq = bench_selector_acquire_decision(&ctx, wl.hit,
+							      SAMPLE_NR,
+							      stats.max_probe_len,
+							      true, iterations,
+							      &copied_b_op);
+			print_selector_acquisition_row(counts[ci], "hit",
+						       "bounded_probe_copy",
+						       stats.max_probe_len,
+						       &acq, copied_b_op);
+		}
 
 		for (i = 0; i < ARRAY_SIZE(payloads); i++) {
 			copy_res[i].payload = payloads[i];
@@ -1520,7 +1880,8 @@ int main(int argc, char **argv)
 			printf(" |\n");
 		}
 
-		printf("\nbpf event path, prefixes=%zu\n", counts[ci]);
+		printf("\nbpf event path (compact run_action shim), prefixes=%zu\n",
+		       counts[ci]);
 		printf("| prefixes | case | payload_B | ns/op | cycles/op | branch_miss/op | l1d_miss/op | llc_miss/op | emitted_ringbuf_B/op | reserve_fail/op | run_allocs |\n");
 		printf("|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 		for (i = 0; i < ARRAY_SIZE(payloads); i++) {
@@ -1555,9 +1916,79 @@ int main(int argc, char **argv)
 						 reserve_fail_op);
 		}
 
+		printf("\nringbuf drop order, prefixes=%zu\n", counts[ci]);
+		printf("| prefixes | case | payload_B | order | ns/op | cycles/op | reserved_ringbuf_B/op | emitted_ringbuf_B/op | reserve_fail/op | run_allocs |\n");
+		printf("|---:|:---|---:|:---|---:|---:|---:|---:|---:|---:|\n");
+		for (i = 0; i < ARRAY_SIZE(payloads); i++) {
+			struct bench_result row;
+			double reserved_b_op, emitted_b_op, reserve_fail_op;
+
+			row = bench_bpf_event_path(&ctx, wl.early, SAMPLE_NR,
+						   payloads[i], iterations,
+						   &emitted_b_op,
+						   &reserve_fail_op);
+			print_drop_order_row(counts[ci], "early_miss",
+					     payloads[i], "drop_before_reserve",
+					     &row, emitted_b_op, emitted_b_op,
+					     reserve_fail_op);
+			row = bench_discard_after_reserve(&ctx, wl.early,
+							  SAMPLE_NR,
+							  payloads[i],
+							  iterations,
+							  &reserved_b_op,
+							  &emitted_b_op,
+							  &reserve_fail_op);
+			print_drop_order_row(counts[ci], "early_miss",
+					     payloads[i],
+					     "discard_after_reserve",
+					     &row, reserved_b_op, emitted_b_op,
+					     reserve_fail_op);
+
+			row = bench_bpf_event_path(&ctx, wl.late, SAMPLE_NR,
+						   payloads[i], iterations,
+						   &emitted_b_op,
+						   &reserve_fail_op);
+			print_drop_order_row(counts[ci], "late_miss",
+					     payloads[i], "drop_before_reserve",
+					     &row, emitted_b_op, emitted_b_op,
+					     reserve_fail_op);
+			row = bench_discard_after_reserve(&ctx, wl.late,
+							  SAMPLE_NR,
+							  payloads[i],
+							  iterations,
+							  &reserved_b_op,
+							  &emitted_b_op,
+							  &reserve_fail_op);
+			print_drop_order_row(counts[ci], "late_miss",
+					     payloads[i],
+					     "discard_after_reserve",
+					     &row, reserved_b_op, emitted_b_op,
+					     reserve_fail_op);
+
+			row = bench_bpf_event_path(&ctx, wl.hit, SAMPLE_NR,
+						   payloads[i], iterations,
+						   &emitted_b_op,
+						   &reserve_fail_op);
+			print_drop_order_row(counts[ci], "hit", payloads[i],
+					     "drop_before_reserve", &row,
+					     emitted_b_op, emitted_b_op,
+					     reserve_fail_op);
+			row = bench_discard_after_reserve(&ctx, wl.hit,
+							  SAMPLE_NR,
+							  payloads[i],
+							  iterations,
+							  &reserved_b_op,
+							  &emitted_b_op,
+							  &reserve_fail_op);
+			print_drop_order_row(counts[ci], "hit", payloads[i],
+					     "discard_after_reserve", &row,
+					     reserved_b_op, emitted_b_op,
+					     reserve_fail_op);
+		}
+
 		printf("\npre-ringbuf estimate, prefixes=%zu\n", counts[ci]);
-		printf("| prefixes | neg_case | events/sec | drop_pct | payload_B | before_ringbuf_MB/s | after_ringbuf_MB/s | traffic_reduction | avoided_intermediate_MB/s | iog_prefilter_ns | iog_cores | compact_prefilter_ns | compact_cores | postdrop_cores | gen_chain_prefilter_cores | list_prefilter_cores | cores_saved_vs_postdrop | compact_cores_saved_vs_postdrop | speedup_vs_list_prefilter | compact_speedup_vs_list_prefilter |\n");
-		printf("|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| prefixes | neg_case | events/sec | drop_pct | payload_B | before_ringbuf_MB/s | after_ringbuf_MB/s | traffic_reduction | avoided_intermediate_MB/s | avoided_dirty_cachelines_M/s | iog_prefilter_ns | iog_cores | compact_prefilter_ns | compact_cores | postdrop_cores | gen_chain_prefilter_cores | list_prefilter_cores | cores_saved_vs_postdrop | compact_cores_saved_vs_postdrop | speedup_vs_list_prefilter | compact_speedup_vs_list_prefilter |\n");
+		printf("|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
 		print_estimate_rows(counts[ci], "early_miss", &early, &hit,
 				    copy_res, ARRAY_SIZE(copy_res));
 		print_estimate_rows(counts[ci], "late_miss", &late, &hit,

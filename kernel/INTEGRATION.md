@@ -15,11 +15,30 @@ tree:
   `tools/testing/selftests/bpf/prog_tests/`.
 - `kernel/selftests/bpf/benchs/*` to `tools/testing/selftests/bpf/benchs/`.
 
+The overlay target must be a disposable clean Linux worktree, not a pristine
+base clone. The script refuses a dirty tree, checks the integration patch
+before copying files, applies the patch after copying the overlay slices, and
+runs `git diff --check` at the end.
+
 The reproducible overlay command is:
 
 ```sh
 ./scripts/apply_linux_overlay.sh /path/to/linux
 ```
+
+Recommended layout for WSL kernel measurements:
+
+```text
+~/src/io_graph              io_graph repo
+~/src/wsl2-linux-base       pristine Microsoft WSL2-Linux-Kernel clone
+~/src/wsl2-linux-iograph    disposable overlay worktree
+~/build/wsl2-iograph        optional O= build output
+/mnt/c/.../wsl-kernels/io_graph  bzImage, modules.vhdx, config snippets
+```
+
+Commit the overlay inside the disposable Linux worktree as a measurement
+checkpoint before building. That commit is for reproducibility, not an upstream
+submission.
 
 Plumb the map type through:
 
@@ -63,12 +82,42 @@ uninitialized-result annotation for final-state observation. Keep those
 prototypes in sync with the BPF declarations when the prototype is copied into
 a Linux tree.
 
+The current measurement prototype registers the io_graph kfunc set through the
+common kfunc hook set. On the measured 6.18 WSL tree,
+`BPF_PROG_TYPE_RAW_TRACEPOINT` does not map to a dedicated kfunc hook, while the
+low-overhead prefilter bench intentionally attaches at `raw_tp/sys_enter`.
+The kfuncs therefore hold their own short RCU read-side section around the
+published graph pointer instead of requiring BPF-side RCU kfunc calls.
+
 The selftests bench keeps its raw selector bytes in a writable BPF global. The
 current verifier path rejects the same `__sz` kfunc memory pair when that input
 is sourced from BPF `.rodata`.
 
 The selftest exercises the first pre-ringbuf invariant: a DROP action returns
 before `bpf_ringbuf_reserve()`.
+
+## WSL Custom Kernel Notes
+
+On WSL2, `.wslconfig` is a global VM configuration. A custom kernel configured
+there affects all WSL2 distributions, including NixOS and Ubuntu. Do not have
+repo scripts rewrite `%UserProfile%\.wslconfig` automatically. Generate or
+store snippets, copy them explicitly for a measurement run, then restore stock
+WSL configuration afterward.
+
+The `kernel=` and `kernelModules=` values in `.wslconfig` are Windows absolute
+paths, not `/mnt/c/...` paths:
+
+```ini
+[wsl2]
+kernel=C:\\path\\to\\wsl-kernels\\io_graph\\bzImage
+kernelModules=C:\\path\\to\\wsl-kernels\\io_graph\\modules.vhdx
+memory=8GB
+processors=4
+```
+
+After changing `.wslconfig`, restart the WSL VM with `wsl --shutdown`, then
+verify the booted kernel with `uname -a` and `/proc/version` before recording
+any benchmark row.
 
 ## Bench Registration
 
@@ -98,19 +147,23 @@ extern const struct bench bench_strncmp_helper;
 +extern const struct bench bench_iograph_prefilter;
 +extern const struct bench bench_iograph_compact_prefilter;
 +extern const struct bench bench_iograph_lpm_prefilter;
++extern const struct bench bench_iograph_lpm_bounded_prefilter;
 +extern const struct bench bench_iograph_decision;
 +extern const struct bench bench_iograph_compact_decision;
 +extern const struct bench bench_iograph_hook_floor;
 +extern const struct bench bench_iograph_lpm_decision;
++extern const struct bench bench_iograph_lpm_bounded_decision;
 @@
- 	&bench_strncmp_helper,
+	&bench_strncmp_helper,
 +	&bench_iograph_prefilter,
 +	&bench_iograph_compact_prefilter,
 +	&bench_iograph_lpm_prefilter,
++	&bench_iograph_lpm_bounded_prefilter,
 +	&bench_iograph_decision,
 +	&bench_iograph_compact_decision,
 +	&bench_iograph_hook_floor,
 +	&bench_iograph_lpm_decision,
++	&bench_iograph_lpm_bounded_decision,
 ```
 
 Example after building the selftests bench binary:
@@ -122,6 +175,8 @@ Example after building the selftests bench binary:
 	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-lpm-prefilter --prefixes prefixes.txt \
 	--selector /drop/event --drop-action 1
+./bench -w 1 -d 5 iograph-lpm-bounded-prefilter --prefixes prefixes.txt \
+	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-decision --blob policy.iog \
 	--selector /drop/event
 ./bench -w 1 -d 5 iograph-compact-decision --blob policy.iog \
@@ -129,4 +184,19 @@ Example after building the selftests bench binary:
 ./bench -w 1 -d 5 iograph-hook-floor --selector /drop/event
 ./bench -w 1 -d 5 iograph-lpm-decision --prefixes prefixes.txt \
 	--selector /drop/event
+./bench -w 1 -d 5 iograph-lpm-bounded-decision --prefixes prefixes.txt \
+	--selector /drop/event
 ```
+
+After compact publication, `iograph-decision` and
+`iograph-compact-decision` both call the current `bpf_iograph_run_action()`
+runtime. The compact-named rows are aliases that make the current runtime
+explicit in result tables; they are not a same-build byte-trie versus compact
+A/B comparison. The old byte-trie matched rows are historical snapshots unless
+a separate debug kfunc or map flag is added for benchmarking.
+
+When building selftests against `/sys/kernel/btf/vmlinux`, the booted kernel
+must already carry `BPF_MAP_TYPE_IOGRAPH`. A stock WSL kernel can compile the
+host bench objects, but generated `vmlinux.h` will not contain the experimental
+map enum, so the BPF skeleton build is expected to fail until the custom kernel
+is booted.

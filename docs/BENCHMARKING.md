@@ -29,15 +29,19 @@ The `io_graph` path changes the execution order:
 For DROP, the benchmark reports 0 ringbuf bytes and no decoded userspace event.
 The avoided intermediate object is `ringbuf_record(payload) + decoded_event`.
 The benchmark runs the decision through the BPF map operations harness. The
-`bpf event path` table executes the order directly: negative rows run the graph
-and skip record construction, while positive rows copy one aligned BPF ringbuf
-record including its 8-byte header.
+userspace shim now mirrors kernel publication: map update verifies and copies
+the byte-trie blob, inlines accept codes, builds the compact runtime graph, and
+`bpf_iograph_run_action` semantics use that published compact graph. The
+`bpf event path` table executes the order directly: negative rows run the
+compact graph and skip record construction, while positive rows copy one
+aligned BPF ringbuf record including its 8-byte header.
 
 ## Implemented paths
 
 The C benchmark compares:
 
-- `io_graph` prefilter before payload materialization;
+- `io_graph` byte-trie interpreter primitive before payload materialization;
+- `io_graph_compact_chain`, the published compact `run_action()` primitive;
 - ringbuf-then-userspace-drop, accounted as record materialization plus decode
   for every event, followed by userspace list-prefix evaluation;
 - generated string-compare chain, implemented as repeated byte compares with a BPF
@@ -53,6 +57,26 @@ The event-path rows execute the order required by the kernel prototype:
 Negative rows should report `0` emitted ringbuf bytes. Positive rows include
 the aligned ringbuf record plus the modeled 8-byte ringbuf header.
 
+The IO-aware userspace harness also prints:
+
+- `selector acquisition + compact decision`, which copies only selector bytes
+  into a bounded local buffer before compact `run_action()`;
+- `ringbuf drop order`, which compares DROP-before-reserve with
+  reserve/copy-then-discard;
+- action-only map memory, where the verified byte-trie blob is discarded after
+  compact publication and `run_action()` keeps working from the compact graph;
+- update scratch and peak-new-update bytes for compact publication.
+
+`iogc` can emit compiler metadata with:
+
+```sh
+tools/iogc/iogc PREFIXES.txt POLICY.iog POLICY.meta.json
+```
+
+The metadata includes `max_prefix_len` and `max_probe_len`, where prefix
+policies use `max_probe_len = min(max_input_len, max_prefix_len + 1)` as the
+bounded selector acquisition limit.
+
 ## Measurement Boundaries
 
 The userspace decision table is a policy-evaluation primitive. Prefixes and
@@ -66,16 +90,22 @@ microbenchmark:
 | Row | Attach/trigger | Policy bytes | Payload |
 |:---|:---|:---|:---|
 | `decision cost` | direct C call | prebuilt selector samples | none |
-| `bpf event path` | userspace BPF-shaped model | prebuilt selector samples | POST copies 300 B, 800 B, or 2 KiB |
+| `bpf event path` | userspace BPF-shaped model | prebuilt selector samples | compact `run_action()` first; POST copies 300 B, 800 B, or 2 KiB |
 | `iograph-hook-floor` | `raw_tp/sys_enter`, triggered by `getpgid` | none | no graph lookup, batched host trigger counter |
-| `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; after compact publication this is the compact `run_action()` path |
-| `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; compact name is the explicit current row |
-| `iograph-lpm-decision` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | action only, batched host trigger counter |
-| `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | current kernel bench event is small |
+| `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; both names use the current compact `run_action()` path after publication |
+| `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; both names use the current compact runtime, and the compact name is the explicit current row |
+| `iograph-compact-post-payload` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | compact decision first; POST reserves and copies `--payload-size` bytes, while DROP remains 0 B |
+| `iograph-ringbuf-always-post` | `raw_tp/sys_enter`, triggered by `getpgid` | no policy lookup | baseline that always reserves and copies the same fixed-size payload |
+| `iograph-lpm-decision` | same `raw_tp/sys_enter` bench | same selector plus full 256 B LPM key scratch copy | action only, batched host trigger counter |
+| `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus full 256 B LPM key scratch copy | current kernel bench event is small |
+| `iograph-lpm-bounded-decision` | same `raw_tp/sys_enter` bench | same selector plus bounded LPM key scratch copy | action only; copies only `selector_len` bytes into the LPM key |
+| `iograph-lpm-bounded-prefilter` | same `raw_tp/sys_enter` bench | same selector plus bounded LPM key scratch copy | LPM baseline variant that avoids the short-selector 256 B copy penalty |
 
 The DROP path reaches the action answer before ringbuf reservation. The POST
 copy rows stay separate because event materialization is the large intermediate
-object being avoided for rejected events.
+object being avoided for rejected events. The kernel rows accept
+`--payload-size 300`, `800`, or `2048`; the BPF program uses constant-size
+reserve branches for those cases so the verifier sees bounded record sizes.
 
 The kernel DROP rows count triggers in the producer thread in 1024-call
 batches. They do not add a BPF global atomic increment after the action says
@@ -117,8 +147,12 @@ Reported directly:
 - best-effort branch/cache misses through `perf_event_open`;
 - artifact size;
 - graph verify, policy update, reclaim, and active-memory cost;
+- update scratch and peak publication bytes;
+- selector acquisition plus compact decision cost;
 - materialization plus decode cost;
 - BPF event-path cost and emitted ringbuf bytes per event;
+- discard-after-reserve versus drop-before-reserve cost;
+- avoided dirty cachelines/sec at negative-heavy rates;
 - run-path allocations.
 
 Reported by estimate:
@@ -152,13 +186,20 @@ The copied userspace and kernel graph objects inline accept codes after blob
 verification by rewriting each runtime node's accepted ID into the action code.
 The verified source blob format still carries `accept_id -> accept_code`, but
 the run path does not need an `accepts[]` lookup on every accepting node.
-The kernel publication path then derives a compact runtime graph for the
-action-only prefilter path: single-child byte chains become literal-run edges,
-while range edges, accepting nodes, final-action nodes, entry states, and
-consuming else transitions remain explicit graph nodes.
+Userspace map publication and kernel map publication then derive a compact
+runtime graph for the action-only prefilter path: single-child byte chains
+become literal-run edges, while range edges, accepting nodes with outgoing
+override potential, entry states, and consuming else transitions remain
+explicit graph nodes. The byte-trie matcher remains in the benchmark as
+`io_graph_byte_trie`; it is a primitive comparison row, not the current
+BPF-shaped event path.
 Accepting leaf nodes are emitted with `IOG_NODE_F_FINAL_ACTION`, which lets the
 last-accept action walker return early without changing longest-match
 semantics for nodes that still have outgoing override edges.
+The compact runtime stores only literal tail bytes after the first dispatch
+byte and can turn terminal final-action leaves into final-action edges. That
+avoids re-comparing the dispatch byte and removes non-entry terminal leaf
+nodes from the action-only compact graph.
 
 `io_graph_accept_inline_first_final_action` returns at the first non-zero
 action. That path is only the right semantics when the caller knows the

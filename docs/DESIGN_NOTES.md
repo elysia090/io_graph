@@ -71,12 +71,13 @@ iteration. It is also a separate loop from the terminal-state-observing
 through the fast walk. The published graph object caches the single-entry state
 and input bound that the verified blob already fixed at update time.
 
-The BPF-callable kfunc path also consumes the RCU read-side protection already
-held by BPF execution instead of nesting one more `rcu_read_lock()` around
-every io_graph call. This mirrors the map helper shape: Linux BPF lookup helpers
-check that BPF execution already holds an RCU flavor before entering map
-`lookup_elem`, and LPM trie lookup dereferences its published trie root under
-that caller-side protection.
+The BPF-callable kfunc path enters a short internal RCU read-side section around
+the published graph dereference and walk. That keeps the BPF call site simple
+for the raw tracepoint benchmark and avoids adding a separate
+`bpf_rcu_read_lock()`/`bpf_rcu_read_unlock()` pair to every benchmark program.
+The measured 6.18 WSL tree does not map `BPF_PROG_TYPE_RAW_TRACEPOINT` to a
+dedicated kfunc hook, so the prototype registers the io_graph kfunc set through
+the common hook set for this measurement path.
 
 The hook-adjacent benchmark follows the same execution-order rule for its own
 measurement state. Negative prefilter rows count syscall triggers in the

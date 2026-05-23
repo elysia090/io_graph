@@ -1,9 +1,13 @@
 #include "iog_internal.h"
 
+#include <iog/compact.h>
+
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define IOG_BPF_MAP_FLAG_MASK IOG_BPF_F_ACTION_ONLY
 
 void iog_map_init(struct iog_map *map)
 {
@@ -81,12 +85,16 @@ u32 iog_map_reclaim(struct iog_map *map)
 
 u32 iog_map_run_action(const struct iog_map *map, const u8 *buf, u32 len)
 {
-	const struct iog_graph_obj *obj = map->graph;
+	const struct iog_graph_obj *obj;
 
+	if (!map)
+		return 0;
+
+	obj = map->graph;
 	if (unlikely(!obj))
 		return 0;
 
-	return iog_run_action(&obj->graph, buf, len);
+	return iog_cgraph_run_action(obj->compact, buf, len);
 }
 
 int iog_map_layout_stats(const struct iog_map *map,
@@ -100,6 +108,8 @@ int iog_map_layout_stats(const struct iog_map *map,
 	obj = map->graph;
 	if (!obj)
 		return -ENOENT;
+	if (!obj->blob)
+		return -ENOENT;
 
 	return iog_graph_layout_stats(&obj->graph, stats);
 }
@@ -108,13 +118,16 @@ const struct iog_graph *iog_map_active_graph(const struct iog_map *map)
 {
 	if (!map || !map->graph)
 		return NULL;
+	if (!map->graph->blob)
+		return NULL;
 
 	return &map->graph->graph;
 }
 
 static u64 iog_graph_obj_mem_usage(const struct iog_graph_obj *obj)
 {
-	return obj ? sizeof(*obj) + obj->blob_len : 0;
+	return obj ? sizeof(*obj) + obj->blob_len +
+		     iog_cgraph_mem_bytes(obj->compact) : 0;
 }
 
 u64 iog_map_active_mem_usage(const struct iog_map *map)
@@ -163,7 +176,7 @@ int iog_bpf_map_alloc(const struct iog_bpf_attr *attr,
 	if (attr->key_size != IOG_BPF_KEY_SIZE ||
 	    !attr->value_size ||
 	    attr->max_entries != IOG_BPF_MAX_ENTRIES ||
-	    attr->map_flags)
+	    (attr->map_flags & ~IOG_BPF_MAP_FLAG_MASK))
 		return -EINVAL;
 
 	map = calloc(1, sizeof(*map));
@@ -199,6 +212,7 @@ long iog_bpf_map_update_elem(struct iog_bpf_map *map, const void *key,
 {
 	const struct iog_blob_hdr *hdr = value;
 	size_t blob_len;
+	int ret;
 
 	if (!map || !iog_bpf_key_ok(key) || !value)
 		return -EINVAL;
@@ -217,8 +231,19 @@ long iog_bpf_map_update_elem(struct iog_bpf_map *map, const void *key,
 		return -EINVAL;
 	blob_len = hdr->total_size;
 
-	return iog_map_update_blob(&map->map, value, blob_len,
-				   &iog_default_limits, err, err_len);
+	ret = iog_map_update_blob(&map->map, value, blob_len,
+				  &iog_default_limits, err, err_len);
+	if (ret)
+		return ret;
+	if (map->attr.map_flags & IOG_BPF_F_ACTION_ONLY) {
+		struct iog_graph_obj *obj = map->map.graph;
+
+		free(obj->blob);
+		obj->blob = NULL;
+		obj->blob_len = 0;
+		memset(&obj->graph, 0, sizeof(obj->graph));
+	}
+	return 0;
 }
 
 long iog_bpf_map_delete_elem(struct iog_bpf_map *map, const void *key)
@@ -273,16 +298,16 @@ int iog_bpf_kfunc_step(const struct iog_bpf_map *map, u32 state, u32 sym,
 u32 iog_bpf_kfunc_run_action(const struct iog_bpf_map *map, const u8 *buf,
 			     u32 len, u32 entry_id)
 {
-	const struct iog_graph *graph;
+	const struct iog_graph_obj *obj;
 
 	if (!map)
 		return 0;
 
-	graph = iog_map_active_graph(&map->map);
-	if (!graph)
+	obj = map->map.graph;
+	if (!obj)
 		return 0;
 
-	return iog_run_action_entry(graph, buf, len, entry_id);
+	return iog_cgraph_run_action_entry(obj->compact, buf, len, entry_id);
 }
 
 int iog_bpf_kfunc_run(const struct iog_bpf_map *map, const u8 *buf, u32 len,
