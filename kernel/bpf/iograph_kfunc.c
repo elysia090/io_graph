@@ -153,8 +153,8 @@ iograph_compact_entry_state(const struct bpf_iograph_graph *graph,
 	return -ENOENT;
 }
 
-static __always_inline u32
-iograph_cnode_next_edge(const struct bpf_iograph_graph *graph,
+static __always_inline const struct bpf_iograph_cedge *
+iograph_cnode_find_edge(const struct bpf_iograph_graph *graph,
 			const struct bpf_iograph_cnode *node, u8 sym)
 {
 	const struct bpf_iograph_cedge *edges;
@@ -162,15 +162,15 @@ iograph_cnode_next_edge(const struct bpf_iograph_graph *graph,
 	u32 i;
 
 	if (!node->edge_cnt)
-		return IOG_NO_STATE;
+		return NULL;
 
 	edges = &graph->compact_edges[node->edge_start];
 	if (likely(node->edge_cnt == 1)) {
 		const struct bpf_iograph_cedge *edge = edges;
 
 		if (sym < edge->sym_lo || sym > edge->sym_hi)
-			return IOG_NO_STATE;
-		return node->edge_start;
+			return NULL;
+		return edge;
 	}
 
 	if (likely(node->edge_cnt <= 4)) {
@@ -180,9 +180,9 @@ iograph_cnode_next_edge(const struct bpf_iograph_graph *graph,
 			if (sym < edge->sym_lo)
 				break;
 			if (sym <= edge->sym_hi)
-				return node->edge_start + i;
+				return edge;
 		}
-		return IOG_NO_STATE;
+		return NULL;
 	}
 
 	while (lo < hi) {
@@ -194,10 +194,10 @@ iograph_cnode_next_edge(const struct bpf_iograph_graph *graph,
 		else if (sym > edge->sym_hi)
 			lo = mid + 1;
 		else
-			return node->edge_start + mid;
+			return edge;
 	}
 
-	return IOG_NO_STATE;
+	return NULL;
 }
 
 static u32 iograph_walk_action_compact(const struct bpf_iograph_graph *graph,
@@ -211,16 +211,15 @@ static u32 iograph_walk_action_compact(const struct bpf_iograph_graph *graph,
 		return action;
 
 	while (i < len) {
-		u32 edge_idx = iograph_cnode_next_edge(graph, node, buf[i]);
-		const struct bpf_iograph_cedge *edge;
+		const struct bpf_iograph_cedge *edge =
+			iograph_cnode_find_edge(graph, node, buf[i]);
 
-		if (edge_idx == IOG_NO_STATE) {
+		if (!edge) {
 			if (node->default_dst == IOG_NO_STATE)
 				break;
 			node = &graph->compact_nodes[node->default_dst];
 			i++;
 		} else {
-			edge = &graph->compact_edges[edge_idx];
 			i++;
 			if (edge->flags & BPF_IOGRAPH_CEDGE_LITERAL) {
 				if (len - i < edge->lit_len ||

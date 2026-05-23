@@ -82,6 +82,8 @@ diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/b
  extern const struct bench bench_strncmp_helper;
 +extern const struct bench bench_iograph_prefilter;
 +extern const struct bench bench_iograph_compact_prefilter;
++extern const struct bench bench_iograph_compact_post_payload;
++extern const struct bench bench_iograph_ringbuf_always_post;
 +extern const struct bench bench_iograph_lpm_prefilter;
 +extern const struct bench bench_iograph_lpm_bounded_prefilter;
 +extern const struct bench bench_iograph_decision;
@@ -96,6 +98,8 @@ diff --git a/tools/testing/selftests/bpf/bench.c b/tools/testing/selftests/bpf/b
  	&bench_strncmp_helper,
 +	&bench_iograph_prefilter,
 +	&bench_iograph_compact_prefilter,
++	&bench_iograph_compact_post_payload,
++	&bench_iograph_ringbuf_always_post,
 +	&bench_iograph_lpm_prefilter,
 +	&bench_iograph_lpm_bounded_prefilter,
 +	&bench_iograph_decision,

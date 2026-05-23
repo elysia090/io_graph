@@ -5,9 +5,9 @@ Do not paste userspace benchmark numbers here as kernel measurements.
 Keep `current.md` honest about the latest overlay/build validation even when
 the booted kernel cannot run the new map type yet.
 
-Use `TEMPLATE.md` for new compact-runtime kernel runs. Keep old byte-trie
-kernel rows as historical snapshots and write refreshed compact rows to a new
-dated file, for example `compact-2026-05-23.md`.
+Use `TEMPLATE.md` as the shape for new compact-runtime kernel runs, then fold
+the summarized rows into `current.md`. Keep old byte-trie kernel rows only as
+historical summaries inside the current entrypoint.
 
 ## Measurement Tree Discipline
 
@@ -45,7 +45,8 @@ For each kernel run record:
   prefilter demo.
 - `perf_event_open` branch/cache/L1/LLC counters when the host exposes the PMU.
 
-Keep raw logs next to each run and summarize the matrix in `docs/RESULTS.md`.
+Fold the summarized matrix into `current.md` and `docs/RESULTS.md`. Raw scratch
+logs should not become long-lived result entrypoints.
 
 References:
 

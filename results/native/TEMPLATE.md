@@ -1,6 +1,6 @@
 # Native Kernel Measurement Template
 
-Date:
+Run label:
 io_graph commit:
 Linux source:
 Linux base tag or commit:
@@ -73,6 +73,17 @@ cd ~/src/wsl2-linux-iograph/tools/testing/selftests/bpf
 	--prefixes /path/to/prefixes-100.txt \
 	--selector /drop/event \
 	--drop-action 1
+
+for size in 300 800 2048; do
+	./bench -w 1 -d 5 iograph-ringbuf-always-post \
+		--payload-size "$size"
+
+	./bench -w 1 -d 5 iograph-compact-post-payload \
+		--blob /path/to/policy-100.iog \
+		--selector /no/match/post \
+		--drop-action 1 \
+		--payload-size "$size"
+done
 ```
 
 Repeat for 100 and 1000 typical policies. Add 1000 shared-prefix and long-path
@@ -92,6 +103,12 @@ rows when the LPM key length remains representable.
 | typical | 1000 | hit DROP | iograph-compact-prefilter | | | | 0 B | |
 | typical | 1000 | hit | iograph-lpm-decision | | | | n/a | |
 | typical | 1000 | hit | iograph-lpm-bounded-decision | | | | n/a | |
+| typical | 1000 | POST 300B | iograph-ringbuf-always-post | | | | post | |
+| typical | 1000 | POST 300B | iograph-compact-post-payload | | | | post | |
+| typical | 1000 | POST 800B | iograph-ringbuf-always-post | | | | post | |
+| typical | 1000 | POST 800B | iograph-compact-post-payload | | | | post | |
+| typical | 1000 | POST 2048B | iograph-ringbuf-always-post | | | | post | |
+| typical | 1000 | POST 2048B | iograph-compact-post-payload | | | | post | |
 
 ## PMU Counters
 

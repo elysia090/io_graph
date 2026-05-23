@@ -62,6 +62,11 @@ Current kernel-side v0 coverage:
 - the selftests bench also exposes `iograph-compact-decision` and
   `iograph-compact-prefilter` aliases so refreshed kernel results can name the
   current compact `run_action()` runtime explicitly;
+- the selftests bench has POST payload rows:
+  `iograph-compact-post-payload` runs compact `run_action()` before copying a
+  fixed 300 B, 800 B, or 2048 B payload, and
+  `iograph-ringbuf-always-post` copies the same payload without a policy
+  lookup;
 - the LPM trie baseline has both full-key-copy rows and bounded-copy rows so
   the io_graph direct-buffer path is compared against an LPM key-materializing
   path without hiding short-selector copy cost;

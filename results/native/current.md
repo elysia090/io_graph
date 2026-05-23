@@ -1,13 +1,8 @@
 # Native Kernel Current State
 
-Date: 2026-05-23
-
-This file records the latest kernel-backed measurement rows. Detailed raw output
-and environment notes are in `results/native/compact-2026-05-23.md`.
-The rows below predate the later compact tail/pruning userspace follow-up
-recorded in `results/userspace/hotpath-tail-2026-05-23.md`; rerun this kernel
-matrix after booting a kernel built from that source if exact post-pruning
-kernel numbers are needed.
+This file records the latest kernel-backed measurement rows. It is the stable
+native result entrypoint; date-stamped run notes are folded here instead of kept
+as parallel sources of truth.
 
 ## Measurement Shape
 
@@ -21,8 +16,10 @@ kernel numbers are needed.
 - Selector input: preloaded writable BPF global. Path acquisition and path
   string generation are excluded from these rows.
 - Payload generation: excluded. DROP rows return before ringbuf reservation.
+- POST payload rows: included separately with one producer and one ringbuf
+  consumer, covering 300 B, 800 B, and 2048 B payload copies.
 - PMU: WSL did not expose a CPU PMU device, so branch/cache/L1/LLC counters are
-  unavailable for this run.
+  unavailable for this run. `perf_event_paranoid` was `1`.
 
 The throughput-derived `ns/op` rows include syscall trigger, raw tracepoint
 dispatch, BPF program execution, and graph rows include map/kfunc work. They
@@ -35,40 +32,46 @@ from an empty BPF program. `floor_delta_ns` subtracts that empty-hook row.
 
 | case | operations_M/s | throughput_ns/op | floor_delta_ns |
 |:---|---:|---:|---:|
-| empty same-hook BPF row | 9.364 +/- 0.144 | 106.79 | 0.00 |
-| 100 typical compact hit | 6.426 +/- 0.014 | 155.62 | 48.83 |
-| 1000 typical compact hit | 5.910 +/- 0.060 | 169.20 | 62.41 |
-| 1000 typical compact early miss | 8.091 +/- 0.181 | 123.59 | 16.80 |
-| 1000 typical compact late miss | 5.867 +/- 0.068 | 170.44 | 63.65 |
-| 1000 typical compact prefilter DROP | 5.956 +/- 0.029 | 167.90 | 61.11 |
-| 1000 shared-prefix compact hit | 6.256 +/- 0.035 | 159.85 | 53.05 |
-| 1000 long-path compact hit | 6.210 +/- 0.044 | 161.03 | 54.24 |
+| empty same-hook BPF row | 8.618 +/- 0.185 | 116.04 | 0.00 |
+| 100 typical compact hit | 6.086 +/- 0.050 | 164.31 | 48.27 |
+| 1000 typical compact early miss | 7.683 +/- 0.127 | 130.16 | 14.12 |
+| 1000 typical compact hit | 5.695 +/- 0.131 | 175.59 | 59.55 |
+| 1000 typical compact prefilter DROP | 5.772 +/- 0.028 | 173.25 | 57.21 |
+| 1000 shared-prefix compact hit | 5.725 +/- 0.060 | 174.67 | 58.63 |
+| 1000 long-path compact hit | 5.724 +/- 0.074 | 174.70 | 58.66 |
 
 The previous byte-trie kernel snapshot had matched decisions around
 352-356 ns/op. The compact runtime brings matched decisions down to
-156-170 ns/op on the same raw-tracepoint measurement shape.
+164-176 ns/op on the same raw-tracepoint measurement shape.
 
 ## Same-Bench LPM Trie
 
 `iograph-lpm-decision` runs the same selector and attach/trigger path through
-`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so this
-historical row uses one per-CPU scratch key object and copies the full 256 B
-selector cap before the LPM helper call. The source now also contains
-`iograph-lpm-bounded-decision` and `iograph-lpm-bounded-prefilter` rows that
-copy only `selector_len` bytes; those rows require a refreshed booted-kernel
-run.
+`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so the full-key
+row copies the full 256 B selector cap before the LPM helper call. The
+bounded-copy row copies only `selector_len` bytes.
 
-| case | compact ns/op | LPM ns/op | compact speedup |
-|:---|---:|---:|---:|
-| 100 typical hit | 155.62 | 228.99 | 1.47x |
-| 1000 typical hit | 169.20 | 287.44 | 1.70x |
-| 1000 typical prefilter DROP | 167.90 | 286.37 | 1.71x |
-| 1000 shared-prefix hit | 159.85 | 476.64 | 2.98x |
-| 1000 long-path hit | 161.03 | 791.77 | 4.92x |
+| case | compact ns/op | LPM full-key ns/op | LPM bounded-copy ns/op | compact vs bounded |
+|:---|---:|---:|---:|---:|
+| 100 typical hit | 164.31 | 212.18 | 184.95 | 1.13x |
+| 1000 typical hit | 175.59 | 250.69 | 212.40 | 1.21x |
+| 1000 typical prefilter DROP | 173.25 | 254.65 | 209.29 | 1.21x |
+| 1000 shared-prefix hit | 174.67 | 319.69 | 304.14 | 1.74x |
+| 1000 long-path hit | 174.70 | 516.00 | 505.31 | 2.89x |
 
-For the plain prefix rows that previously favored LPM, runtime-only chain
-compression now closes the matched-path gap and beats the same-hook LPM baseline
-in this WSL kernel run.
+Bounded-copy LPM materially improves the short-selector rows, but compact
+`io_graph` still beats the same-hook LPM baseline for this prefix workload.
+
+## POST Payload Rows
+
+These rows include ringbuf reservation, payload copy, and one ringbuf consumer.
+They show the cost paid for POST events; DROP rows above return before reserve.
+
+| payload_B | ringbuf_record_B | compact POST M/s | compact POST ns/op | always POST M/s | always POST ns/op |
+|---:|---:|---:|---:|---:|---:|
+| 300 | 344 | 2.164 +/- 0.070 | 462.11 | 2.581 +/- 0.107 | 387.45 |
+| 800 | 840 | 1.658 +/- 0.017 | 603.14 | 1.807 +/- 0.018 | 553.40 |
+| 2048 | 2088 | 0.987 +/- 0.013 | 1013.17 | 1.024 +/- 0.030 | 976.56 |
 
 ## Validation Notes
 
@@ -80,8 +83,11 @@ in this WSL kernel run.
 - `bench iograph-lpm-decision` and `bench iograph-lpm-prefilter` loaded the
   corresponding prefix text files into an LPM trie baseline on the same raw
   tracepoint path.
-- The source now has bounded-copy LPM bench variants, but this dated kernel run
-  predates those rows.
+- `bench iograph-lpm-bounded-decision` and
+  `bench iograph-lpm-bounded-prefilter` measured selector-length-only LPM key
+  materialization.
+- `bench iograph-compact-post-payload` and `bench iograph-ringbuf-always-post`
+  measured POST-side payload materialization with a ringbuf consumer.
 - The compact prefilter DROP row returned before `bpf_ringbuf_reserve()`, so
   rejected events contributed 0 ringbuf bytes in this bench path.
 - The WSL environment exposes no CPU PMU device. Branch/cache/L1/LLC

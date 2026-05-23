@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define IOG_BPF_MAP_FLAG_MASK IOG_BPF_F_ACTION_ONLY
+
 void iog_map_init(struct iog_map *map)
 {
 	memset(map, 0, sizeof(*map));
@@ -106,6 +108,8 @@ int iog_map_layout_stats(const struct iog_map *map,
 	obj = map->graph;
 	if (!obj)
 		return -ENOENT;
+	if (!obj->blob)
+		return -ENOENT;
 
 	return iog_graph_layout_stats(&obj->graph, stats);
 }
@@ -113,6 +117,8 @@ int iog_map_layout_stats(const struct iog_map *map,
 const struct iog_graph *iog_map_active_graph(const struct iog_map *map)
 {
 	if (!map || !map->graph)
+		return NULL;
+	if (!map->graph->blob)
 		return NULL;
 
 	return &map->graph->graph;
@@ -170,7 +176,7 @@ int iog_bpf_map_alloc(const struct iog_bpf_attr *attr,
 	if (attr->key_size != IOG_BPF_KEY_SIZE ||
 	    !attr->value_size ||
 	    attr->max_entries != IOG_BPF_MAX_ENTRIES ||
-	    attr->map_flags)
+	    (attr->map_flags & ~IOG_BPF_MAP_FLAG_MASK))
 		return -EINVAL;
 
 	map = calloc(1, sizeof(*map));
@@ -206,6 +212,7 @@ long iog_bpf_map_update_elem(struct iog_bpf_map *map, const void *key,
 {
 	const struct iog_blob_hdr *hdr = value;
 	size_t blob_len;
+	int ret;
 
 	if (!map || !iog_bpf_key_ok(key) || !value)
 		return -EINVAL;
@@ -224,8 +231,19 @@ long iog_bpf_map_update_elem(struct iog_bpf_map *map, const void *key,
 		return -EINVAL;
 	blob_len = hdr->total_size;
 
-	return iog_map_update_blob(&map->map, value, blob_len,
-				   &iog_default_limits, err, err_len);
+	ret = iog_map_update_blob(&map->map, value, blob_len,
+				  &iog_default_limits, err, err_len);
+	if (ret)
+		return ret;
+	if (map->attr.map_flags & IOG_BPF_F_ACTION_ONLY) {
+		struct iog_graph_obj *obj = map->map.graph;
+
+		free(obj->blob);
+		obj->blob = NULL;
+		obj->blob_len = 0;
+		memset(&obj->graph, 0, sizeof(obj->graph));
+	}
+	return 0;
 }
 
 long iog_bpf_map_delete_elem(struct iog_bpf_map *map, const void *key)

@@ -38,8 +38,9 @@ static int cgraph_entry_state(const struct iog_cgraph *cg, u32 entry_id,
 	return -ENOENT;
 }
 
-static u32 cnode_next_edge(const struct iog_cedge *all_edges,
-			   const struct iog_cnode *node, u8 sym)
+static const struct iog_cedge *cnode_find_edge(const struct iog_cedge *all_edges,
+					       const struct iog_cnode *node,
+					       u8 sym)
 {
 	const struct iog_cedge *edges = &all_edges[node->edge_start];
 	u32 lo = 0, hi = node->edge_cnt;
@@ -49,8 +50,8 @@ static u32 cnode_next_edge(const struct iog_cedge *all_edges,
 		const struct iog_cedge *edge = edges;
 
 		if (sym < edge->sym_lo || sym > edge->sym_hi)
-			return IOG_NO_STATE;
-		return node->edge_start;
+			return NULL;
+		return edge;
 	}
 
 	if (likely(node->edge_cnt <= 4)) {
@@ -60,9 +61,9 @@ static u32 cnode_next_edge(const struct iog_cedge *all_edges,
 			if (sym < edge->sym_lo)
 				break;
 			if (sym <= edge->sym_hi)
-				return node->edge_start + i;
+				return edge;
 		}
-		return IOG_NO_STATE;
+		return NULL;
 	}
 
 	while (lo < hi) {
@@ -74,10 +75,10 @@ static u32 cnode_next_edge(const struct iog_cedge *all_edges,
 		else if (sym > edge->sym_hi)
 			lo = mid + 1;
 		else
-			return node->edge_start + mid;
+			return edge;
 	}
 
-	return IOG_NO_STATE;
+	return NULL;
 }
 
 static bool byte_edge(const struct iog_edge *edge)
@@ -426,16 +427,15 @@ u32 iog_cgraph_run_action_entry(const struct iog_cgraph *cg, const u8 *buf,
 		return action;
 
 	while (i < len) {
-		u32 edge_idx = cnode_next_edge(cg->edges, node, buf[i]);
-		const struct iog_cedge *edge;
+		const struct iog_cedge *edge =
+			cnode_find_edge(cg->edges, node, buf[i]);
 
-		if (edge_idx == IOG_NO_STATE) {
+		if (!edge) {
 			if (node->default_dst == IOG_NO_STATE)
 				break;
 			node = &cg->nodes[node->default_dst];
 			i++;
 		} else {
-			edge = &cg->edges[edge_idx];
 			i++;
 			if (edge->flags & IOG_CEDGE_LITERAL) {
 				if (len - i < edge->lit_len ||
@@ -478,10 +478,10 @@ u32 iog_cgraph_count_transitions_entry(const struct iog_cgraph *cg,
 
 	node = &cg->nodes[state];
 	while (i < len) {
-		u32 edge_idx = cnode_next_edge(cg->edges, node, buf[i]);
-		const struct iog_cedge *edge;
+		const struct iog_cedge *edge =
+			cnode_find_edge(cg->edges, node, buf[i]);
 
-		if (edge_idx == IOG_NO_STATE) {
+		if (!edge) {
 			if (node->default_dst == IOG_NO_STATE)
 				break;
 			node = &cg->nodes[node->default_dst];
@@ -490,7 +490,6 @@ u32 iog_cgraph_count_transitions_entry(const struct iog_cgraph *cg,
 			continue;
 		}
 
-		edge = &cg->edges[edge_idx];
 		i++;
 		if (edge->flags & IOG_CEDGE_LITERAL) {
 			if (len - i < edge->lit_len ||

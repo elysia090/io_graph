@@ -224,6 +224,100 @@ static void test_compact_generated_prefix_set(void)
 			    sizeof(samples) / sizeof(samples[0]));
 }
 
+static u32 test_xorshift32(u32 *state)
+{
+	u32 x = *state;
+
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	*state = x;
+	return x;
+}
+
+static void test_compact_random_prefix_differential(void)
+{
+	enum {
+		ROUNDS = 16,
+		PREFIX_NR = 96,
+		SAMPLE_NR_LOCAL = 192,
+		PREFIX_MAX = 72,
+		SAMPLE_MAX = 96,
+	};
+	static const char alphabet[] = "abcdefghijklmnopqrstuvwxyz0123456789-_.";
+	struct iog_prefix prefixes[PREFIX_NR];
+	struct sample_bytes samples[SAMPLE_NR_LOCAL];
+	u8 prefix_storage[PREFIX_NR][PREFIX_MAX];
+	u8 sample_storage[SAMPLE_NR_LOCAL][SAMPLE_MAX];
+	size_t round;
+
+	for (round = 0; round < ROUNDS; round++) {
+		u32 seed = 0x9e3779b9u ^ (u32)(round * 0x85ebca6bu);
+		size_t i;
+
+		for (i = 0; i < PREFIX_NR; i++) {
+			u32 len = 6 + test_xorshift32(&seed) % 58;
+			u32 j;
+
+			TEST_ASSERT(len < PREFIX_MAX);
+			prefix_storage[i][0] = '/';
+			for (j = 1; j < len; j++) {
+				u32 x = test_xorshift32(&seed);
+
+				prefix_storage[i][j] =
+					(u8)alphabet[x % (sizeof(alphabet) - 1)];
+			}
+			prefixes[i].bytes = prefix_storage[i];
+			prefixes[i].len = len;
+			prefixes[i].action_code = 1000u + (u32)i +
+						  (u32)round * 100u;
+		}
+
+		for (i = 0; i < SAMPLE_NR_LOCAL; i++) {
+			u32 mode = test_xorshift32(&seed) % 4u;
+			u32 chosen = test_xorshift32(&seed) % PREFIX_NR;
+			u32 len = prefixes[chosen].len;
+
+			TEST_ASSERT(len < SAMPLE_MAX);
+			memcpy(sample_storage[i], prefixes[chosen].bytes, len);
+			if (mode == 0) {
+				/* exact hit */
+			} else if (mode == 1) {
+				/* hit with suffix; last-accept should survive */
+				u32 extra = 1 + test_xorshift32(&seed) % 12u;
+				u32 j;
+
+				if (len + extra >= SAMPLE_MAX)
+					extra = SAMPLE_MAX - len - 1;
+				for (j = 0; j < extra; j++)
+					sample_storage[i][len + j] =
+						(u8)alphabet[test_xorshift32(&seed) %
+							     (sizeof(alphabet) - 1)];
+				len += extra;
+			} else if (mode == 2 && len > 2) {
+				/* late miss */
+				u32 pos = 1 + test_xorshift32(&seed) % (len - 1);
+
+				sample_storage[i][pos] ^= 0x40u;
+			} else {
+				/* unrelated early miss */
+				len = 6 + test_xorshift32(&seed) % 32u;
+				TEST_ASSERT(len < SAMPLE_MAX);
+				sample_storage[i][0] = '!';
+				for (u32 j = 1; j < len; j++)
+					sample_storage[i][j] =
+						(u8)alphabet[test_xorshift32(&seed) %
+							     (sizeof(alphabet) - 1)];
+			}
+			samples[i].bytes = sample_storage[i];
+			samples[i].len = len;
+		}
+
+		check_compact_equiv(prefixes, PREFIX_NR, samples,
+				    SAMPLE_NR_LOCAL);
+	}
+}
+
 int main(void)
 {
 	static const u8 path[] = "/drop/event";
@@ -259,6 +353,7 @@ int main(void)
 	test_compact_preserves_longest_accept();
 	test_compact_shared_and_long_paths();
 	test_compact_generated_prefix_set();
+	test_compact_random_prefix_differential();
 	free(blob);
 	return 0;
 }

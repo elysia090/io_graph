@@ -15,6 +15,7 @@
 
 #define IOGRAPH_DEFAULT_SELECTOR	"/drop/event"
 #define IOGRAPH_BENCH_SELECTOR_CAP	256
+#define IOGRAPH_BENCH_MAX_PAYLOAD	2048
 #define IOGRAPH_TRIGGER_BATCH		1024
 
 struct iograph_lpm_key {
@@ -36,9 +37,11 @@ static struct iograph_args {
 	const char *prefixes_path;
 	const char *selector;
 	u32 drop_action;
+	u32 payload_size;
 } args = {
 	.selector = IOGRAPH_DEFAULT_SELECTOR,
 	.drop_action = 1,
+	.payload_size = 300,
 };
 
 enum {
@@ -46,6 +49,7 @@ enum {
 	ARG_PREFIXES,
 	ARG_SELECTOR,
 	ARG_DROP_ACTION,
+	ARG_PAYLOAD_SIZE,
 };
 
 static const struct argp_option opts[] = {
@@ -53,8 +57,15 @@ static const struct argp_option opts[] = {
 	{ "prefixes", ARG_PREFIXES, "TXT", 0, "Prefix lines for LPM trie" },
 	{ "selector", ARG_SELECTOR, "BYTES", 0, "Raw selector bytes" },
 	{ "drop-action", ARG_DROP_ACTION, "CODE", 0, "DROP action code" },
+	{ "payload-size", ARG_PAYLOAD_SIZE, "BYTES", 0,
+	  "Payload bytes copied by POST payload rows" },
 	{},
 };
+
+static bool iograph_payload_size_ok(u32 size)
+{
+	return size == 300 || size == 800 || size == 2048;
+}
 
 static error_t iograph_parse_arg(int key, char *arg, struct argp_state *state)
 {
@@ -76,6 +87,12 @@ static error_t iograph_parse_arg(int key, char *arg, struct argp_state *state)
 		if (!end || *end || code > UINT_MAX)
 			argp_usage(state);
 		args.drop_action = code;
+		break;
+	case ARG_PAYLOAD_SIZE:
+		code = strtoul(arg, &end, 0);
+		if (!end || *end || !iograph_payload_size_ok(code))
+			argp_usage(state);
+		args.payload_size = code;
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -145,6 +162,10 @@ static void iograph_validate_common(void)
 			IOGRAPH_BENCH_SELECTOR_CAP - 1);
 		exit(1);
 	}
+	if (!iograph_payload_size_ok(args.payload_size)) {
+		fprintf(stderr, "payload must be 300, 800, or 2048 bytes\n");
+		exit(1);
+	}
 }
 
 static void iograph_validate(void)
@@ -190,6 +211,16 @@ static void iograph_hook_floor_validate(void)
 		fprintf(stderr, "iograph hook floor benchmark does not emit events\n");
 		exit(1);
 	}
+}
+
+static void iograph_payload_validate(void)
+{
+	iograph_validate();
+}
+
+static void iograph_always_post_validate(void)
+{
+	iograph_validate_common();
 }
 
 static void update_lpm_policy(void)
@@ -250,8 +281,16 @@ static long iograph_collect_triggers(void)
 	return triggers;
 }
 
+static void iograph_fill_payload(void)
+{
+	u32 i;
+
+	for (i = 0; i < IOGRAPH_BENCH_MAX_PAYLOAD; i++)
+		ctx.skel->bss->payload[i] = (unsigned char)i;
+}
+
 static void iograph_setup_common(bool use_lpm, bool decision_only,
-				 bool lpm_bounded_copy)
+				 bool lpm_bounded_copy, bool payload_post)
 {
 	size_t selector_len = strlen(args.selector);
 	struct bpf_program *prog;
@@ -277,7 +316,9 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 
 	ctx.skel->rodata->selector_len = selector_len;
 	ctx.skel->rodata->drop_action = args.drop_action;
+	ctx.skel->rodata->payload_len = args.payload_size;
 	memcpy(ctx.skel->bss->selector, args.selector, selector_len);
+	iograph_fill_payload();
 
 	err = iograph_bench__load(ctx.skel);
 	if (err)
@@ -299,7 +340,9 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 					  &key, ctx.blob, BPF_ANY);
 		if (err)
 			die_errno("update iograph policy", errno);
-		prog = decision_only ?
+		prog = payload_post ?
+			ctx.skel->progs.iograph_payload_bench_run :
+			decision_only ?
 			ctx.skel->progs.iograph_decision_bench_run :
 			ctx.skel->progs.iograph_bench_run;
 	}
@@ -324,32 +367,78 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 
 static void iograph_setup(void)
 {
-	iograph_setup_common(false, false, false);
+	iograph_setup_common(false, false, false, false);
 }
 
 static void iograph_lpm_setup(void)
 {
-	iograph_setup_common(true, false, false);
+	iograph_setup_common(true, false, false, false);
 }
 
 static void iograph_lpm_bounded_setup(void)
 {
-	iograph_setup_common(true, false, true);
+	iograph_setup_common(true, false, true, false);
 }
 
 static void iograph_decision_setup(void)
 {
-	iograph_setup_common(false, true, false);
+	iograph_setup_common(false, true, false, false);
 }
 
 static void iograph_lpm_decision_setup(void)
 {
-	iograph_setup_common(true, true, false);
+	iograph_setup_common(true, true, false, false);
 }
 
 static void iograph_lpm_bounded_decision_setup(void)
 {
-	iograph_setup_common(true, true, true);
+	iograph_setup_common(true, true, true, false);
+}
+
+static void iograph_payload_setup(void)
+{
+	iograph_setup_common(false, false, false, true);
+}
+
+static void iograph_always_post_setup(void)
+{
+	size_t selector_len = strlen(args.selector);
+	int err;
+
+	setup_libbpf();
+	ctx.skel = iograph_bench__open();
+	if (!ctx.skel) {
+		fprintf(stderr, "failed to open iograph skeleton\n");
+		exit(1);
+	}
+
+	ctx.skel->rodata->selector_len = selector_len;
+	ctx.skel->rodata->drop_action = args.drop_action;
+	ctx.skel->rodata->payload_len = args.payload_size;
+	memcpy(ctx.skel->bss->selector, args.selector, selector_len);
+	iograph_fill_payload();
+
+	err = iograph_bench__load(ctx.skel);
+	if (err)
+		die_errno("load iograph skeleton", err);
+
+	iograph_alloc_triggers();
+	ctx.link = bpf_program__attach(
+		ctx.skel->progs.iograph_always_post_payload_bench_run);
+	err = libbpf_get_error(ctx.link);
+	if (err)
+		die_errno("attach iograph tracing program", err);
+
+	if (!env.consumer_cnt)
+		return;
+
+	ctx.ringbuf = ring_buffer__new(bpf_map__fd(ctx.skel->maps.events),
+				       event_cb, NULL, NULL);
+	err = libbpf_get_error(ctx.ringbuf);
+	if (err) {
+		ctx.ringbuf = NULL;
+		die_errno("open iograph ringbuf", err);
+	}
 }
 
 static void iograph_hook_floor_setup(void)
@@ -428,6 +517,30 @@ const struct bench bench_iograph_compact_prefilter = {
 	.argp = &bench_iograph_argp,
 	.validate = iograph_validate,
 	.setup = iograph_setup,
+	.producer_thread = iograph_producer,
+	.consumer_thread = iograph_consumer,
+	.measure = iograph_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_compact_post_payload = {
+	.name = "iograph-compact-post-payload",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_payload_validate,
+	.setup = iograph_payload_setup,
+	.producer_thread = iograph_producer,
+	.consumer_thread = iograph_consumer,
+	.measure = iograph_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_ringbuf_always_post = {
+	.name = "iograph-ringbuf-always-post",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_always_post_validate,
+	.setup = iograph_always_post_setup,
 	.producer_thread = iograph_producer,
 	.consumer_thread = iograph_consumer,
 	.measure = iograph_measure,

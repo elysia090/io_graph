@@ -3,8 +3,11 @@
 Local validation:
 
 ```sh
-cd tools/iog_bench
-make validate-native
+nix shell nixpkgs#clang nixpkgs#gnumake -c make all CC=clang
+nix shell nixpkgs#clang nixpkgs#gnumake -c make test CC=clang
+nix shell nixpkgs#clang nixpkgs#gnumake -c ./tools/iog_bench/iog_bench --counts 100,1000 --dataset typical --iters 100000
+nix shell nixpkgs#clang nixpkgs#gnumake -c ./tools/iog_bench/iog_bench --counts 1000 --dataset shared-prefix --iters 100000
+nix shell nixpkgs#clang nixpkgs#gnumake -c ./tools/iog_bench/iog_bench --counts 1000 --dataset long-path --iters 100000
 ```
 
 Environment for this snapshot: NixOS WSL2, Linux
@@ -17,7 +20,7 @@ Hardware PMU counters were not exposed in this WSL run:
 perf_counters=unavailable(branch=No such file or directory cache=No such file or directory l1d=No such file or directory llc=No such file or directory)
 ```
 
-The validation entrypoint reported `perf_event_paranoid=0` and
+The validation entrypoint reported `perf_event_paranoid=1` and
 `pmu_cpu_type=unavailable`, so branch/L1/LLC miss columns report `na`.
 `rdtsc` cycle estimates were available. Native bare-metal Linux should fill the
 counter columns when the CPU PMU exposes those events.
@@ -53,68 +56,73 @@ verified byte-trie blob -> compact run_action graph
 
 The blob format is unchanged. The builder keeps branch, entry, accepting,
 flagged, else-transition, and shared-continuation states, then folds
-single-child byte chains into literal-run edges. Raw result files:
-
-- `results/userspace/compact-chain-current.md`
-- `results/userspace/compact-chain-10000.md`
-- `results/userspace/compact-chain-shared-prefix-1000.md`
-- `results/userspace/compact-chain-long-path-1000.md`
+single-child byte chains into literal-run edges. This file is the stable source
+of truth for those rows; parallel work-note snapshots are intentionally not
+kept.
 
 PMU counters were still unavailable in this WSL run, so branch/L1/LLC columns
 remain `na`; rdtsc cycles and p95/p99/p999 batch timings were recorded.
-The current publication-shaped compact shim and update/memory split are tracked
-in `results/userspace/compact-runtime-2026-05-23.md`; older rows below are kept
-as the frozen proof snapshot unless a section says otherwise.
-The latest hot-path follow-up is
-`results/userspace/hotpath-tail-2026-05-23.md`, which adds literal tail-only
-storage, final-action edge returns, and terminal final-action leaf pruning.
+The current publication-shaped compact shim and update/memory split are folded
+into this file. The BPF-shaped userspace map update now verifies the byte-trie
+blob, inlines accept IDs into action codes, builds the compact runtime graph,
+and routes `run_action()` through that published compact graph.
+
+The latest hot-path implementation stores only literal tail bytes, lets
+terminal `IOG_NODE_F_FINAL_ACTION` leaves return from incoming compact edges,
+and prunes non-entry terminal final-action leaves from the compact node array.
+IO-aware pre-emission accounting is also folded here: selector acquisition
+bounds, action-only active memory, update scratch/peak bytes,
+drop-before-reserve versus discard-after-reserve, and dirty-cacheline
+accounting are part of the stable result entrypoint rather than separate work
+notes.
 
 ### Compact Runtime Size
 
-| dataset | prefixes | iog_blob_B | compact_runtime_B | compact_nodes | compact_edges | literal_edges | literal_bytes | max_literal_len | blob/compact |
-|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| typical | 100 | 44,592 | 6,472 | 151 | 150 | 137 | 1,576 | 17 | 6.89 |
-| typical | 1000 | 346,264 | 56,506 | 1,379 | 1,378 | 1,329 | 12,314 | 17 | 6.13 |
-| typical | 10000 | 869,472 | 253,476 | 6,955 | 6,954 | 6,757 | 30,852 | 17 | 3.43 |
-| shared-prefix | 1000 | 201,756 | 42,740 | 1,112 | 1,111 | 1,001 | 7,092 | 92 | 4.72 |
-| long-path | 1000 | 64,472 | 37,837 | 1,112 | 1,111 | 1,001 | 2,189 | 189 | 1.70 |
+This table reflects literal tail-only storage, final-action edge returns, and
+terminal final-action leaf pruning. The verified byte-trie blob is unchanged;
+only the publication-time compact runtime object changes.
+
+| dataset | prefixes | iog_blob_B | compact_runtime_B | compact_nodes | compact_edges | literal_edges | literal_tail_B | mean_tail_len | max_tail_len | blob/compact |
+|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| typical | 100 | 44,592 | 4,735 | 51 | 150 | 137 | 1,439 | 10.50 | 16 | 9.42 |
+| typical | 1000 | 346,264 | 39,177 | 379 | 1,378 | 1,329 | 10,985 | 8.27 | 16 | 8.84 |
+| typical | 10000 | 869,472 | 164,799 | 1,835 | 6,954 | 6,757 | 24,095 | 3.57 | 16 | 5.28 |
+| shared-prefix | 1000 | 201,756 | 25,739 | 112 | 1,111 | 1,001 | 6,091 | 6.08 | 91 | 7.84 |
+| long-path | 1000 | 64,472 | 20,836 | 112 | 1,111 | 1,001 | 1,188 | 1.19 | 188 | 3.09 |
 
 ### Compact Decision Cost
 
-| dataset | prefixes | case | byte-trie_ns | compact_ns | compact_p95 | compact_p99 | compact_p999 | speedup |
+These rows are the compact action runtime after tail-only literal storage and
+final-action edge returns. The latency shift is a constant-factor pass; the
+main win is the smaller hot working set above.
+
+| dataset | prefixes | case | byte_trie_ns | compact_ns | compact_p95 | compact_p99 | compact_p999 | speedup |
 |:---|---:|:---|---:|---:|---:|---:|---:|---:|
-| typical | 100 | late_miss | 145.51 | 36.97 | 50.14 | 57.46 | 271.24 | 3.94 |
-| typical | 100 | hit | 177.31 | 34.16 | 36.03 | 47.32 | 227.26 | 5.19 |
-| typical | 1000 | late_miss | 149.42 | 43.05 | 44.92 | 63.23 | 122.50 | 3.47 |
-| typical | 1000 | hit | 200.97 | 49.64 | 61.78 | 85.57 | 277.31 | 4.05 |
-| typical | 10000 | late_miss | 170.87 | 60.14 | 70.40 | 88.80 | 180.50 | 2.84 |
-| typical | 10000 | hit | 235.38 | 62.59 | 64.53 | 111.60 | 511.70 | 3.76 |
-| shared-prefix | 1000 | hit | 611.81 | 31.07 | 30.90 | 33.91 | 151.68 | 19.69 |
-| long-path | 1000 | hit | 1047.64 | 31.91 | 31.92 | 34.43 | 187.91 | 32.83 |
+| typical | 100 | hit | 228.11 | 29.47 | 29.38 | 30.30 | 128.04 | 7.74 |
+| typical | 1000 | hit | 239.75 | 41.33 | 39.71 | 54.18 | 413.89 | 5.80 |
+| typical | 10000 | hit | 204.17 | 61.02 | 60.12 | 68.62 | 287.19 | 3.35 |
+| shared-prefix | 1000 | hit | 741.63 | 29.36 | 29.44 | 32.68 | 228.29 | 25.26 |
+| long-path | 1000 | hit | 1,475.96 | 28.46 | 28.47 | 30.87 | 217.64 | 51.86 |
 
 ### Matched Path Cost
 
-`matched_transitions/op` is byte-trie state advances for byte-trie rows and
-compact edge advances for compact rows.
+`matched_transitions/op` is compact edge advances. Literal-run edges can
+consume many input bytes in one transition, so both `ns/input_B` and
+`ns/transition` are reported.
 
-| dataset | prefixes | case | matcher | input_B/op | matched_transitions/op | mean_ns/op | ns/input_B | ns/transition | p95 | p99 | p999 |
-|:---|---:|:---|:---|---:|---:|---:|---:|---:|---:|---:|---:|
-| typical | 100 | exact_short_match | byte-trie | 37.47 | 37.47 | 179.22 | 4.783 | 4.783 | 206.95 | 358.34 | 750.83 |
-| typical | 100 | exact_short_match | compact | 37.47 | 5.44 | 34.93 | 0.932 | 6.424 | 36.19 | 53.98 | 237.28 |
-| typical | 1000 | exact_short_match | byte-trie | 37.05 | 37.05 | 195.87 | 5.287 | 5.287 | 221.57 | 360.20 | 560.48 |
-| typical | 1000 | exact_short_match | compact | 37.05 | 6.52 | 48.22 | 1.302 | 7.400 | 60.55 | 100.34 | 274.44 |
-| typical | 10000 | exact_short_match | byte-trie | 37.62 | 37.62 | 215.84 | 5.737 | 5.737 | 221.16 | 469.40 | 2139.85 |
-| typical | 10000 | exact_short_match | compact | 37.62 | 7.70 | 60.73 | 1.614 | 7.884 | 64.63 | 75.42 | 126.05 |
-| shared-prefix | 1000 | exact_short_match | byte-trie | 101.00 | 101.00 | 538.50 | 5.332 | 5.332 | 653.37 | 988.20 | 1473.31 |
-| shared-prefix | 1000 | exact_short_match | compact | 101.00 | 4.00 | 35.02 | 0.347 | 8.755 | 44.50 | 54.12 | 469.48 |
-| long-path | 1000 | exact_long_match | byte-trie | 193.00 | 193.00 | 1131.54 | 5.863 | 5.863 | 1532.81 | 1926.99 | 4542.57 |
-| long-path | 1000 | exact_long_match | compact | 193.00 | 4.00 | 33.22 | 0.172 | 8.306 | 31.80 | 47.21 | 1004.39 |
+| dataset | prefixes | case | input_B/op | matched_transitions/op | mean_ns/op | ns/input_B | ns/transition | p95 | p99 | p999 |
+|:---|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|
+| typical | 100 | exact_short_match | 37.47 | 5.44 | 29.24 | 0.780 | 5.375 | 29.38 | 30.30 | 128.04 |
+| typical | 1000 | exact_short_match | 37.05 | 6.52 | 40.50 | 1.093 | 6.212 | 39.71 | 54.18 | 413.89 |
+| typical | 10000 | exact_short_match | 37.62 | 7.70 | 60.73 | 1.614 | 7.884 | 64.63 | 75.42 | 126.05 |
+| shared-prefix | 1000 | exact_short_match | 101.00 | 4.00 | 29.63 | 0.293 | 7.408 | 29.44 | 32.68 | 228.29 |
+| long-path | 1000 | exact_long_match | 193.00 | 4.00 | 28.62 | 0.148 | 7.155 | 28.47 | 30.87 | 217.64 |
 
 ## Memory Overhead
 
-This frozen proof snapshot predates compact runtime publication in the
-userspace shim. It reports the byte-trie graph object memory, not the current
-published compact graph memory. The current split is:
+The active publication object retains the verified source blob for diagnostic
+byte-trie `run()` and `step()` unless action-only mode is requested. The
+current split is:
 
 ```text
 source blob bytes
@@ -122,14 +130,13 @@ source blob bytes
 + graph/map container overhead
 ```
 
-See `results/userspace/compact-runtime-2026-05-23.md` for the current
-`active_blob_B`, `active_compact_B`, and `active_total_B` rows.
-
-| prefixes | iog_blob_B | active_mem_B | active_over_blob_B |
-|---:|---:|---:|---:|
-| 100 | 44,592 | 44,720 | 128 |
-| 1000 | 346,264 | 346,392 | 128 |
-| 10000 | 869,472 | 869,600 | 128 |
+| dataset | prefixes | active_blob_B | active_compact_B | active_total_B | action_only_mem_B |
+|:---|---:|---:|---:|---:|---:|
+| typical | 100 | 44,592 | 4,735 | 49,463 | 4,887 |
+| typical | 1000 | 346,264 | 39,177 | 385,577 | 39,329 |
+| typical | 10000 | 869,472 | 164,799 | 1,034,407 | not run |
+| shared-prefix | 1000 | 201,756 | 25,739 | 227,631 | 25,891 |
+| long-path | 1000 | 64,472 | 20,836 | 85,444 | 20,988 |
 
 ## Verifier And Layout
 
@@ -153,18 +160,19 @@ single-edge fast path before any JIT work.
 
 ## BPF Map Update
 
-This table is the byte-trie publication snapshot. The current map update path
-also builds the compact runtime graph before publication, and the update table
-now reports `compact_build_us`, `active_blob_B`, `active_compact_B`, and
-`active_total_B` in `results/userspace/compact-runtime-2026-05-23.md`.
-Reclaim remains reported separately to keep post-RCU-grace-period freeing out
-of policy activation latency.
+The map update path verifies the byte-trie blob, inlines accept codes, builds
+the compact runtime graph, and then publishes the new object. Reclaim remains
+reported separately to keep post-RCU-grace-period freeing out of policy
+activation latency. Peak estimates include update scratch and the new object;
+`peak_with_retired_B` additionally includes old graphs waiting for reclamation.
 
-| prefixes | verify_us | map_update_us | update_iters | active_mem_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | 5.70 | 22.85 | 100 | 44,704 | 99 | 4,422,528 | 4,467,232 | 12.61 | 99 | 100 |
-| 1000 | 43.41 | 58.96 | 20 | 346,376 | 19 | 6,580,536 | 6,926,912 | 2.22 | 19 | 20 |
-| 10000 | 89.77 | 169.97 | 5 | 869,584 | 4 | 3,478,208 | 4,347,792 | 0.97 | 4 | 5 |
+| dataset | prefixes | verify_us | compact_build_us | map_update_us | active_total_B | update_scratch_B | peak_new_update_B |
+|:---|---:|---:|---:|---:|---:|---:|---:|
+| typical | 100 | 6.14 | 25.15 | 61.87 | 49,463 | 14,310 | 63,773 |
+| typical | 1000 | 41.34 | 177.19 | 339.05 | 385,577 | 111,276 | 496,853 |
+| typical | 10000 | 102.79 | 359.72 | 575.68 | 1,034,407 | not run | not run |
+| shared-prefix | 1000 | 21.42 | 87.80 | 245.24 | 227,631 | 64,827 | 292,458 |
+| long-path | 1000 | 7.41 | 36.23 | 76.25 | 85,444 | 20,700 | 106,144 |
 
 ## BPF Map Ops
 
@@ -178,34 +186,17 @@ Smoke result after adding map ops:
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 100 | 4 | 44,592 | 1 | 0 | -95 | -95 | 0 | 44,720 | 1 | 1 | 1 |
 
-## Decision Cost
+Action-only mode verifies the same source blob and publishes the compact
+runtime graph, then discards the retained source blob from the active object.
+`run_action()` remains available; byte-trie `run()` and active byte-graph
+inspection return no graph.
 
-| prefixes | case | matcher | ns/op | cycles/op | run_allocs |
-|---:|:---|:---|---:|---:|---:|
-| 100 | early_miss | io_graph | 11.24 | needs rerun | 0 |
-| 100 | late_miss | io_graph | 183.77 | needs rerun | 0 |
-| 100 | hit | io_graph | 223.79 | needs rerun | 0 |
-| 100 | late_miss | gen_chain | 445.95 | 1,198.72 | 0 |
-| 100 | late_miss | list_loop | 232.66 | 625.40 | 0 |
-| 1000 | early_miss | io_graph | 7.17 | needs rerun | 0 |
-| 1000 | late_miss | io_graph | 192.63 | needs rerun | 0 |
-| 1000 | hit | io_graph | 234.00 | needs rerun | 0 |
-| 1000 | late_miss | gen_chain | 4,408.77 | 11,850.78 | 0 |
-| 1000 | late_miss | list_loop | 2,188.21 | 5,881.93 | 0 |
-
-## Decision Tail Batches
-
-The expanded benchmark prints batch distributions for the policy primitive.
-Selector strings are prebuilt before timing, and up to 1024 timed batches feed
-the p95/p99/p999 columns.
-
-| prefixes | case | matcher | mean_ns/op | batch_p95_ns/op | batch_p99_ns/op | batch_p999_ns/op |
-|---:|:---|:---|---:|---:|---:|---:|
-| 100 | late_miss | io_graph | 152.76 | 164.89 | 208.11 | 256.65 |
-| 1000 | late_miss | io_graph | 163.10 | 188.72 | 285.03 | 458.47 |
-| 10000 | early_miss | io_graph | 11.75 | 10.97 | 11.00 | 11.50 |
-| 10000 | late_miss | io_graph | 164.42 | 163.78 | 184.72 | 462.69 |
-| 10000 | hit | io_graph | 218.65 | 217.38 | 264.75 | 1,227.94 |
+| dataset | prefixes | retained_mem_B | action_only_mem_B | run_action | diagnostic_run |
+|:---|---:|---:|---:|---:|:---|
+| typical | 100 | 49,463 | 4,887 | ok | no graph |
+| typical | 1000 | 385,577 | 39,329 | ok | no graph |
+| shared-prefix | 1000 | 227,631 | 25,891 | ok | no graph |
+| long-path | 1000 | 85,444 | 20,988 | ok | no graph |
 
 ## Materialization Plus Decode
 
@@ -214,23 +205,74 @@ the p95/p99/p999 columns.
 | 100 | 300 | 344 | 22.39 | 60.21 |
 | 100 | 800 | 840 | 38.04 | 102.29 |
 | 100 | 2048 | 2088 | 74.44 | 200.17 |
-| 1000 | 300 | 344 | needs rerun | needs rerun |
-| 1000 | 800 | 840 | needs rerun | needs rerun |
-| 1000 | 2048 | 2088 | needs rerun | needs rerun |
+| 1000 | 300 | 344 | 23.18 | na |
+| 1000 | 800 | 840 | 39.38 | na |
+| 1000 | 2048 | 2088 | 84.03 | na |
 
 ## BPF Event Path
 
-This frozen row predates the compact shim alignment. The current event-path
-table printed by `tools/iog_bench/iog_bench` is named
+The table printed by `tools/iog_bench/iog_bench` is named
 `bpf event path (compact run_action shim)`: it runs the published compact graph
 before materialization and only copies a record for POST. DROP rows emit
 0 ringbuf bytes per event.
 
-| prefixes | case | payload_B | ns/op | cycles/op | emitted_ringbuf_B/op | reserve_fail/op | run_allocs |
-|---:|:---|---:|---:|---:|---:|---:|---:|
-| 100 | early_miss | 800 | 7.98 | 21.46 | 0.00 | 0.000000 | 0 |
-| 100 | late_miss | 800 | 182.36 | 490.19 | 0.00 | 0.000000 | 0 |
-| 100 | hit | 800 | 256.65 | 689.88 | 840.00 | 0.000000 | 0 |
+| dataset | prefixes | case | payload_B | ns/op | emitted_ringbuf_B/op | reserve_fail/op | run_allocs |
+|:---|---:|:---|---:|---:|---:|---:|---:|
+| typical | 100 | early_miss | 300 | 7.51 | 0.00 | 0.000000 | 0 |
+| typical | 100 | late_miss | 300 | 29.40 | 0.00 | 0.000000 | 0 |
+| typical | 100 | hit | 300 | 36.87 | 344.00 | 0.000000 | 0 |
+| typical | 100 | hit | 800 | 46.67 | 840.00 | 0.000000 | 0 |
+| typical | 100 | hit | 2048 | 56.60 | 2088.00 | 0.000000 | 0 |
+| typical | 1000 | early_miss | 300 | 8.62 | 0.00 | 0.000000 | 0 |
+| typical | 1000 | late_miss | 300 | 45.20 | 0.00 | 0.000000 | 0 |
+| typical | 1000 | hit | 300 | 51.90 | 344.00 | 0.000000 | 0 |
+| typical | 1000 | hit | 800 | 54.67 | 840.00 | 0.000000 | 0 |
+| typical | 1000 | hit | 2048 | 67.49 | 2088.00 | 0.000000 | 0 |
+| shared-prefix | 1000 | hit | 300 | 39.02 | 344.00 | 0.000000 | 0 |
+| shared-prefix | 1000 | hit | 800 | 53.89 | 840.00 | 0.000000 | 0 |
+| shared-prefix | 1000 | hit | 2048 | 54.10 | 2088.00 | 0.000000 | 0 |
+| long-path | 1000 | hit | 300 | 36.54 | 344.00 | 0.000000 | 0 |
+| long-path | 1000 | hit | 800 | 41.25 | 840.00 | 0.000000 | 0 |
+| long-path | 1000 | hit | 2048 | 54.84 | 2088.00 | 0.000000 | 0 |
+
+## Selector Acquisition And Drop Order
+
+Prefix policy does not need full path or command-line acquisition on the reject
+path. The compiler reports `max_prefix_len` and `max_probe_len`, where
+`max_probe_len = min(max_input_len, max_prefix_len + 1)`, so a caller can copy
+only the bytes needed to distinguish a longer override before running the
+graph.
+
+| dataset | prefixes | max_prefix_len | max_probe_len |
+|:---|---:|---:|---:|
+| typical | 1000 | 43 | 44 |
+| shared-prefix | 1000 | 101 | 102 |
+| long-path | 1000 | 193 | 194 |
+
+Selector acquisition rows copy bytes into a bounded local buffer before
+`run_action()`. Full-copy and bounded-probe rows let the report distinguish
+policy evaluation from input acquisition cost.
+
+Drop order rows model the difference between deciding before reserve and
+reserving a ringbuf record that is later discarded.
+
+| dataset | prefixes | case | payload_B | drop_before_reserve_ns | discard_after_reserve_ns | drop_before_reserve_B | discard_after_reserve_B |
+|:---|---:|:---|---:|---:|---:|---:|---:|
+| typical | 1000 | early reject | 300 | 7.67 | 15.53 | 0 | 344 |
+| typical | 1000 | late reject | 300 | 41.17 | 49.81 | 0 | 344 |
+| shared-prefix | 1000 | early reject | 300 | 4.72 | 14.35 | 0 | 344 |
+| shared-prefix | 1000 | late reject | 300 | 29.55 | 40.62 | 0 | 344 |
+| long-path | 1000 | early reject | 300 | 5.23 | 14.48 | 0 | 344 |
+| long-path | 1000 | late reject | 300 | 34.89 | 40.07 | 0 | 344 |
+
+At 1M events/sec and 95% reject, 0-byte rejects avoid the following producer
+ringbuf traffic and dirty cacheline writes:
+
+| payload_B | ringbuf_record_B | record_cachelines | avoided_dirty_cachelines_per_sec |
+|---:|---:|---:|---:|
+| 300 | 344 | 6 | 5.70M |
+| 800 | 840 | 14 | 13.30M |
+| 2048 | 2088 | 33 | 31.35M |
 
 ## Pre-Ringbuf Summary
 
@@ -238,16 +280,15 @@ Traffic reduction is exactly `1 / post_fraction`: 90% drop gives 10x, 95% gives
 20x, 97% gives 33.3x, and 99% gives 100x. Rejected events contribute 0 ringbuf
 bytes in the `io_graph` prefilter path.
 
-Representative 1M events/sec rows:
+At 1M events/sec the traffic side is deterministic once payload size and
+drop rate are chosen:
 
-| prefixes | neg_case | drop_pct | payload_B | before_ringbuf_MB/s | after_ringbuf_MB/s | avoided_intermediate_MB/s | iog_prefilter_ns | iog_cores | postdrop_cores | cores_saved_vs_postdrop | speedup_vs_list_prefilter |
-|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 100 | early_miss | 90 | 800 | 840.00 | 84.00 | 856.80 | 35.7 | 0.036 | 0.100 | 0.065 | 1.85 |
-| 100 | early_miss | 95 | 800 | 840.00 | 42.00 | 904.40 | 22.8 | 0.023 | 0.097 | 0.074 | 2.66 |
-| 100 | late_miss | 95 | 2048 | 2088.00 | 104.40 | 2090.00 | 187.2 | 0.187 | 0.324 | 0.137 | 1.35 |
-| 1000 | early_miss | 95 | 800 | 840.00 | 42.00 | 904.40 | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun |
-| 1000 | late_miss | 95 | 2048 | 2088.00 | 104.40 | 2090.00 | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun |
-| 1000 | late_miss | 99 | 2048 | 2088.00 | 20.88 | 2178.00 | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun | previous full run needs rerun |
+| drop_pct | post_fraction | traffic_reduction | 800B_before_MB/s | 800B_after_MB/s | 2048B_before_MB/s | 2048B_after_MB/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 90 | 0.10 | 10.0x | 840.00 | 84.00 | 2088.00 | 208.80 |
+| 95 | 0.05 | 20.0x | 840.00 | 42.00 | 2088.00 | 104.40 |
+| 97 | 0.03 | 33.3x | 840.00 | 25.20 | 2088.00 | 62.64 |
+| 99 | 0.01 | 100.0x | 840.00 | 8.40 | 2088.00 | 20.88 |
 
 ## Reading
 
@@ -265,6 +306,7 @@ list-loop late mismatch baselines are 4.41 us/op and 2.19 us/op.
 The second thesis is also supported: when the graph runs before materialization,
 rejected events become 0 ringbuf bytes. With BPF ringbuf header accounting, at
 1M events/sec with 95% drop and 2 KiB payloads, ringbuf traffic falls from
-2088 MB/s to 104.4 MB/s. The latest full 1000-prefix matrix should be rerun
-after the BPF map ops and event-path changes; the last full decision-cost run
-still shows 1000-prefix decisions below 1 us/op.
+2088 MB/s to 104.4 MB/s. The current userspace harness now also reports the
+bounded selector acquisition row, discard-after-reserve baseline, action-only
+active memory, and update scratch/peak bytes needed to explain where the I/O
+win comes from.
