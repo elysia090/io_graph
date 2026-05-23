@@ -742,7 +742,7 @@ edge_start:
 edge_cnt:
   number of outgoing explicit edges
 default_dst:
-  fallback state, or IOG_NO_STATE
+  consuming else transition on explicit edge miss, or IOG_NO_STATE
 accept_id:
   classifier/match/action id
 
@@ -782,7 +782,8 @@ The v0 verifier checks well-formedness and safety only.
 * edge_start + edge_cnt <= total edge count,
 * default_dst == IOG_NO_STATE or default_dst < node_cnt,
 * accept_id == 0 or accept_id < accept_cnt,
-* flags known.
+* flags known,
+* FINAL_ACTION is only valid on accepting nodes.
 
 17.4 Edge checks
 
@@ -804,16 +805,16 @@ This lets runtime avoid overlap handling.
 * entry state < node_cnt,
 * initial_state < node_cnt.
 
-17.7 Default chain checks
+17.7 Consuming else transitions
 
-Default transitions are allowed, but bounded.
+`default_dst` is v0's consuming else transition. If no explicit edge matches
+the current symbol, runtime moves to `default_dst` and consumes exactly that one
+input byte. It is not a D2FA-style non-consuming fallback.
 
-default chain depth <= IOG_MAX_DEFAULT_DEPTH
-no unbounded default-only cycle
-
-Suggested v0 value:
-
-IOG_MAX_DEFAULT_DEPTH = 8
+Because the input cursor advances once per transition, default-only cycles are
+bounded by input length and do not need a separate fallback-depth check.
+If non-consuming fallback is added later, it should use a distinct
+`fallback_dst` field or flag and a separate verifier rule.
 
 17.8 What verifier does not check
 
@@ -1163,7 +1164,7 @@ Test matrix:
 
 * random sparse graphs,
 * random self-loop graphs,
-* random default chains,
+* random consuming-else transitions,
 * random input buffers,
 * random entry states,
 * edge ordering edge cases,
@@ -1325,15 +1326,15 @@ Recommended initial limits:
 graph blob max size:
   8 MiB
 node count max:
-  1,000,000
+  250,000
 edge count max:
-  4,000,000
+  500,000
 action count max:
   65,536
 max input length per run:
   65,536 bytes
-default chain depth:
-  8
+consuming else transition:
+  explicit-edge miss consumes one input byte, so cycles are bounded by input length
 typical run-path target:
   under 1 microsecond for common negative-heavy prefix checks
 absolute run-path guardrail:

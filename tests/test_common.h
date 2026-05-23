@@ -2,6 +2,7 @@
 #define IOG_TEST_COMMON_H
 
 #include <iog/bench.h>
+#include <iog/compact.h>
 #include <iog/verify.h>
 
 #include <stdio.h>

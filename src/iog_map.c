@@ -197,6 +197,9 @@ long iog_bpf_map_update_elem(struct iog_bpf_map *map, const void *key,
 			     const void *value, u64 flags,
 			     char *err, size_t err_len)
 {
+	const struct iog_blob_hdr *hdr = value;
+	size_t blob_len;
+
 	if (!map || !iog_bpf_key_ok(key) || !value)
 		return -EINVAL;
 	if (flags != IOG_BPF_ANY &&
@@ -208,7 +211,13 @@ long iog_bpf_map_update_elem(struct iog_bpf_map *map, const void *key,
 	if (flags == IOG_BPF_EXIST && !map->map.graph)
 		return -ENOENT;
 
-	return iog_map_update_blob(&map->map, value, map->attr.value_size,
+	if (map->attr.value_size < sizeof(*hdr) ||
+	    hdr->total_size < sizeof(*hdr) ||
+	    hdr->total_size > map->attr.value_size)
+		return -EINVAL;
+	blob_len = hdr->total_size;
+
+	return iog_map_update_blob(&map->map, value, blob_len,
 				   &iog_default_limits, err, err_len);
 }
 

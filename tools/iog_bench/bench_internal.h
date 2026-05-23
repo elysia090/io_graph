@@ -2,6 +2,7 @@
 #define IOG_BENCH_INTERNAL_H
 
 #include <iog/bench.h>
+#include <iog/compact.h>
 
 #define IOG_BENCH_SAMPLE_NR 64
 #define IOG_BENCH_RINGBUF_HDR_SZ_MODEL 8u
@@ -54,6 +55,7 @@ struct workload {
 struct run_ctx {
 	const struct iog_map *map;
 	const struct iog_bpf_map *bpf_map;
+	const struct iog_cgraph *compact;
 	const struct iog_prefix *prefixes;
 	size_t prefix_nr;
 };
@@ -67,6 +69,7 @@ void workload_init(struct workload *wl, size_t nr, enum workload_kind kind);
 void workload_free(struct workload *wl);
 
 u32 match_iog(const struct run_ctx *ctx, const u8 *buf, u32 len);
+u32 match_iog_compact(const struct run_ctx *ctx, const u8 *buf, u32 len);
 u32 match_iog_first_action(const struct run_ctx *ctx, const u8 *buf, u32 len);
 u32 match_chain(const struct run_ctx *ctx, const u8 *buf, u32 len);
 u32 match_list(const struct run_ctx *ctx, const u8 *buf, u32 len);

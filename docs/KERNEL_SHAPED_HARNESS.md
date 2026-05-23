@@ -27,7 +27,7 @@ cases currently cover:
 - out-of-bounds node edge range;
 - out-of-bounds edge destination;
 - out-of-bounds accept id;
-- default-chain cycle;
+- consuming-else self-loop;
 - unsorted/overlapping edges;
 - input length above verifier limits.
 

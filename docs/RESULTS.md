@@ -8,18 +8,22 @@ The active result track is the kernel prototype:
 | Track | Current status | Evidence |
 |:---|:---|:---|
 | map type | source split into map and kfunc units with RCU whole-graph replacement | `kernel/bpf/` |
-| blob verifier | map update rejects bad layout, bounds, default chains, count caps, and blob-size caps | `kernel/bpf/iograph_map.c` |
-| interpreter | required non-JIT execution path with sparse edge walk | `kernel/bpf/iograph_kfunc.c` |
+| blob verifier | map update rejects bad layout, bounds, unknown flags, count caps, and blob-size caps | `kernel/bpf/iograph_map.c` |
+| interpreter | required non-JIT execution path; `run_action()` uses the compact runtime graph, `run()`/`step()` keep the byte-trie diagnostic paths | `kernel/bpf/iograph_kfunc.c` |
 | kfunc API | action-only prefilter kfunc plus run/step observation paths, verifier annotations, tracing-hook registration | `kernel/bpf/iograph_kfunc.c` |
 | selftest | bad blob update rejection plus DROP-before-ringbuf-reserve path | `kernel/selftests/bpf/` |
-| bench | Linux selftests bench source accepts compiled blobs and raw selectors | `kernel/selftests/bpf/benchs/bench_iograph.c` |
+| bench | Linux selftests bench source accepts compiled blobs and raw selectors; compact aliases make the current `run_action()` runtime explicit | `kernel/selftests/bpf/benchs/bench_iograph.c` |
 | pre-ringbuf path | BPF program calls `bpf_iograph_run_action()` before reserve | `bpf/prefilter_demo.bpf.c` |
+| compact runtime | userspace and kernel map-publication single-child chain compression; userspace measurements are current, kernel rows need refresh on a booted overlay | `src/iog_compact.c`, `kernel/bpf/iograph_map.c`, `results/userspace/compact-runtime-2026-05-23.md` |
 
 ## Kernel Measurements
 
 Kernel numbers are intentionally not copied from the userspace proof. The
-current kernel-backed rows come from a patched WSL kernel with
-`BPF_MAP_TYPE_IOGRAPH` and the action-only kfunc path enabled:
+current kernel-backed rows below are the last byte-trie action-kfunc snapshot
+from a patched WSL kernel with `BPF_MAP_TYPE_IOGRAPH` enabled. The source now
+builds a compact runtime graph during map publication and routes
+`bpf_iograph_run_action()` through it, so the native kernel table must be
+refreshed before treating the matched-prefix rows as current:
 
 | prefixes | selftests bench case | operations_M/s | throughput_ns/op | ringbuf on reject |
 |---:|:---|---:|---:|:---|
@@ -34,8 +38,12 @@ and graph rows include the map/kfunc walk. The same-hook floor shows why an
 early miss is dominated by attach/trigger/BPF dispatch rather than traversal.
 The detailed run shape, userspace comparison, and same-bench LPM trie rows live
 in `results/native/current.md`. The userspace primitive now emits batch
-p95/p99/p999 rows and 10000-prefix memory/update rows in
-`results/userspace/current.md`.
+p95/p99/p999 rows, 10000-prefix memory/update rows, and compact-chain runtime
+rows in `results/userspace/current.md`.
+The current compact-runtime follow-up for the kernel publication shape is in
+`results/userspace/compact-runtime-2026-05-23.md`; it shows typical 100-prefix
+hits at 33.32 ns and typical 1000-prefix hits at 45.44 ns on the compact graph
+in the same WSL userspace environment.
 
 Current kernel evidence:
 
@@ -51,6 +59,8 @@ Required kernel matrix:
 - map create/update/delete verification results;
 - invalid blob rejection from `BPF_MAP_UPDATE_ELEM`;
 - `bpf_iograph_run` interpreter latency from a BPF benchmark program;
+- refreshed `iograph-compact-decision` and `iograph-compact-prefilter` rows
+  against the old byte-trie snapshot and same-hook LPM rows;
 - branch, cache, L1, and LLC miss counters when `perf_event_open` or
   `perf stat` can observe the native PMU;
 - BPF verifier load time and BPF JIT time for baselines;

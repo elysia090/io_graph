@@ -8,6 +8,7 @@ LDLIBS ?=
 
 LIB_SRCS := \
 	$(ROOT)/src/iog_blob.c \
+	$(ROOT)/src/iog_compact.c \
 	$(ROOT)/src/iog_compile.c \
 	$(ROOT)/src/iog_graph.c \
 	$(ROOT)/src/iog_interp.c \

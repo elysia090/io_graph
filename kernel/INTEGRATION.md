@@ -96,15 +96,19 @@ Add the io_graph pieces after copying the overlay:
 @@
 extern const struct bench bench_strncmp_helper;
 +extern const struct bench bench_iograph_prefilter;
++extern const struct bench bench_iograph_compact_prefilter;
 +extern const struct bench bench_iograph_lpm_prefilter;
 +extern const struct bench bench_iograph_decision;
++extern const struct bench bench_iograph_compact_decision;
 +extern const struct bench bench_iograph_hook_floor;
 +extern const struct bench bench_iograph_lpm_decision;
 @@
  	&bench_strncmp_helper,
 +	&bench_iograph_prefilter,
++	&bench_iograph_compact_prefilter,
 +	&bench_iograph_lpm_prefilter,
 +	&bench_iograph_decision,
++	&bench_iograph_compact_decision,
 +	&bench_iograph_hook_floor,
 +	&bench_iograph_lpm_decision,
 ```
@@ -114,9 +118,13 @@ Example after building the selftests bench binary:
 ```sh
 ./bench -w 1 -d 5 iograph-prefilter --blob policy.iog \
 	--selector /drop/event --drop-action 1
+./bench -w 1 -d 5 iograph-compact-prefilter --blob policy.iog \
+	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-lpm-prefilter --prefixes prefixes.txt \
 	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-decision --blob policy.iog \
+	--selector /drop/event
+./bench -w 1 -d 5 iograph-compact-decision --blob policy.iog \
 	--selector /drop/event
 ./bench -w 1 -d 5 iograph-hook-floor --selector /drop/event
 ./bench -w 1 -d 5 iograph-lpm-decision --prefixes prefixes.txt \

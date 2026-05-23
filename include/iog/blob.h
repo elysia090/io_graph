@@ -12,7 +12,8 @@ typedef uint64_t u64;
 #define IOG_MAGIC		0x494f4752u /* "IOGR" */
 #define IOG_VERSION		1u
 #define IOG_NO_STATE		UINT32_MAX
-#define IOG_MAX_DEFAULT_DEPTH	8u
+#define IOG_NODE_F_FINAL_ACTION	(1u << 0)
+#define IOG_NODE_FLAG_MASK	IOG_NODE_F_FINAL_ACTION
 
 struct iog_blob_hdr {
 	u32 magic;
@@ -37,6 +38,7 @@ struct iog_node {
 	u32 edge_start;
 	u16 edge_cnt;
 	u16 flags;
+	/* Consuming else transition on explicit edge miss, or IOG_NO_STATE. */
 	u32 default_dst;
 	u32 accept_id;
 };

@@ -406,6 +406,18 @@ const struct bench bench_iograph_prefilter = {
 	.report_final = hits_drops_report_final,
 };
 
+const struct bench bench_iograph_compact_prefilter = {
+	.name = "iograph-compact-prefilter",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_validate,
+	.setup = iograph_setup,
+	.producer_thread = iograph_producer,
+	.consumer_thread = iograph_consumer,
+	.measure = iograph_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
 const struct bench bench_iograph_lpm_prefilter = {
 	.name = "iograph-lpm-prefilter",
 	.argp = &bench_iograph_argp,
@@ -420,6 +432,17 @@ const struct bench bench_iograph_lpm_prefilter = {
 
 const struct bench bench_iograph_decision = {
 	.name = "iograph-decision",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_decision_validate,
+	.setup = iograph_decision_setup,
+	.producer_thread = iograph_producer,
+	.measure = iograph_decision_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_compact_decision = {
+	.name = "iograph-compact-decision",
 	.argp = &bench_iograph_argp,
 	.validate = iograph_decision_validate,
 	.setup = iograph_decision_setup,

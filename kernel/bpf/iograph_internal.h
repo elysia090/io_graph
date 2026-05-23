@@ -8,11 +8,29 @@
 #include <uapi/linux/bpf_iograph.h>
 
 #define BPF_IOGRAPH_MAX_BLOB_SIZE	(8u << 20)
-#define BPF_IOGRAPH_MAX_NODES		1000000u
-#define BPF_IOGRAPH_MAX_EDGES		4000000u
+#define BPF_IOGRAPH_MAX_NODES		250000u
+#define BPF_IOGRAPH_MAX_EDGES		500000u
 #define BPF_IOGRAPH_MAX_ENTRIES		64u
 #define BPF_IOGRAPH_MAX_ACCEPTS		65536u
 #define BPF_IOGRAPH_MAX_INPUT_LEN	65536u
+#define BPF_IOGRAPH_CEDGE_LITERAL	(1u << 0)
+
+struct bpf_iograph_cnode {
+	u32 edge_start;
+	u16 edge_cnt;
+	u16 flags;
+	u32 default_dst;
+	u32 action_code;
+};
+
+struct bpf_iograph_cedge {
+	u32 dst;
+	u32 lit_off;
+	u32 lit_len;
+	u8 sym_lo;
+	u8 sym_hi;
+	u8 flags;
+};
 
 struct bpf_iograph_graph {
 	struct rcu_head rcu;
@@ -20,13 +38,22 @@ struct bpf_iograph_graph {
 	u32 max_input_len;
 	u32 single_entry_id;
 	u32 single_entry_state;
+	u32 compact_single_entry_state;
+	u32 compact_node_cnt;
+	u32 compact_edge_cnt;
+	u32 compact_lit_len;
+	u32 compact_literal_edge_cnt;
+	u32 compact_max_literal_len;
 	bool single_entry;
-	bool accept_codes_inline;
 	const struct iog_blob_hdr *hdr;
 	const struct iog_node *nodes;
 	const struct iog_edge *edges;
 	const struct iog_entry *entries;
 	const struct iog_accept *accepts;
+	struct iog_entry *compact_entries;
+	struct bpf_iograph_cnode *compact_nodes;
+	struct bpf_iograph_cedge *compact_edges;
+	u8 *compact_lits;
 	u8 blob[];
 };
 
