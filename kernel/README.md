@@ -45,10 +45,12 @@ Current kernel-side v0 coverage:
   global "no longer override exists" property for arbitrary graph producers;
 - `default_dst` is v0's consuming else transition, not a non-consuming fallback
   chain;
-- BPF kfunc reads reuse the BPF program's existing RCU read-side protection
-  instead of nesting another RCU section per graph decision;
-- kfunc registrations are marked `KF_RCU_PROTECTED` so callers must already be
-  in an RCU-protected BPF execution context;
+- BPF kfunc reads enter a short internal RCU read-side section, keeping the
+  BPF call site simple and allowing the raw tracepoint bench path to call the
+  kfunc without an extra BPF-side RCU kfunc pair;
+- kfuncs are registered through the common kfunc hook set because the measured
+  6.18 WSL tree does not map `BPF_PROG_TYPE_RAW_TRACEPOINT` to a dedicated
+  kfunc hook;
 - hook-adjacent DROP benches count producer triggers outside BPF in batches so
   the rejected path does not pay a benchmark-only global counter update or a
   per-trigger userspace atomic;
@@ -66,6 +68,6 @@ Current kernel-side v0 coverage:
   arrays should be allocated node-aware alongside the graph object;
 - `bpf_iograph_run()` keeps final-state output for validation and debugging;
 - `bpf_iograph_step()` exposes one verified transition;
-- kfunc registration covers the tracing selftest path and the raw tracepoint
-  path used by the low-overhead prefilter bench;
+- kfunc registration covers the raw tracepoint path used by the low-overhead
+  prefilter bench;
 - selftests include invalid blob updates and the DROP-before-reserve path.

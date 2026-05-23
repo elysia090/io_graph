@@ -82,6 +82,13 @@ uninitialized-result annotation for final-state observation. Keep those
 prototypes in sync with the BPF declarations when the prototype is copied into
 a Linux tree.
 
+The current measurement prototype registers the io_graph kfunc set through the
+common kfunc hook set. On the measured 6.18 WSL tree,
+`BPF_PROG_TYPE_RAW_TRACEPOINT` does not map to a dedicated kfunc hook, while the
+low-overhead prefilter bench intentionally attaches at `raw_tp/sys_enter`.
+The kfuncs therefore hold their own short RCU read-side section around the
+published graph pointer instead of requiring BPF-side RCU kfunc calls.
+
 The selftests bench keeps its raw selector bytes in a writable BPF global. The
 current verifier path rejects the same `__sz` kfunc memory pair when that input
 is sourced from BPF `.rodata`.

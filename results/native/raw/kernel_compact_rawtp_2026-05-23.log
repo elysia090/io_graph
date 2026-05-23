@@ -1,0 +1,111 @@
+
+### floor
+Iter   0 (250.870us): hits    9.476M/s (  9.476M/prod), drops    0.000M/s, total operations    9.476M/s
+Iter   1 (-151.232us): hits    9.265M/s (  9.265M/prod), drops    0.000M/s, total operations    9.265M/s
+Iter   2 ( 70.238us): hits    9.243M/s (  9.243M/prod), drops    0.000M/s, total operations    9.243M/s
+Iter   3 (114.399us): hits    9.392M/s (  9.392M/prod), drops    0.000M/s, total operations    9.392M/s
+Iter   4 (-178.363us): hits    9.557M/s (  9.557M/prod), drops    0.000M/s, total operations    9.557M/s
+Summary: hits    9.364 ± 0.144M/s (  9.364M/prod), drops    0.000 ± 0.000M/s, total operations    9.364 ± 0.144M/s
+
+### typical100_compact_hit
+Iter   0 (256.048us): hits    6.433M/s (  6.433M/prod), drops    0.000M/s, total operations    6.433M/s
+Iter   1 (-132.143us): hits    6.434M/s (  6.434M/prod), drops    0.000M/s, total operations    6.434M/s
+Iter   2 ( 95.471us): hits    6.421M/s (  6.421M/prod), drops    0.000M/s, total operations    6.421M/s
+Iter   3 (-122.986us): hits    6.409M/s (  6.409M/prod), drops    0.000M/s, total operations    6.409M/s
+Iter   4 (221.881us): hits    6.440M/s (  6.440M/prod), drops    0.000M/s, total operations    6.440M/s
+Summary: hits    6.426 ± 0.014M/s (  6.426M/prod), drops    0.000 ± 0.000M/s, total operations    6.426 ± 0.014M/s
+
+### typical100_lpm_hit
+iograph_lpm_prefixes=100
+Iter   0 (194.989us): hits    4.348M/s (  4.348M/prod), drops    0.000M/s, total operations    4.348M/s
+Iter   1 (-16.095us): hits    4.385M/s (  4.385M/prod), drops    0.000M/s, total operations    4.385M/s
+Iter   2 ( 94.156us): hits    4.387M/s (  4.387M/prod), drops    0.000M/s, total operations    4.387M/s
+Iter   3 (-67.397us): hits    4.360M/s (  4.360M/prod), drops    0.000M/s, total operations    4.360M/s
+Iter   4 (-87.155us): hits    4.336M/s (  4.336M/prod), drops    0.000M/s, total operations    4.336M/s
+Summary: hits    4.367 ± 0.024M/s (  4.367M/prod), drops    0.000 ± 0.000M/s, total operations    4.367 ± 0.024M/s
+
+### typical1000_compact_hit
+Iter   0 (275.915us): hits    6.024M/s (  6.024M/prod), drops    0.000M/s, total operations    6.024M/s
+Iter   1 (-59.731us): hits    5.994M/s (  5.994M/prod), drops    0.000M/s, total operations    5.994M/s
+Iter   2 (-41.993us): hits    5.890M/s (  5.890M/prod), drops    0.000M/s, total operations    5.890M/s
+Iter   3 (110.120us): hits    5.903M/s (  5.903M/prod), drops    0.000M/s, total operations    5.903M/s
+Iter   4 (-114.980us): hits    5.854M/s (  5.854M/prod), drops    0.000M/s, total operations    5.854M/s
+Summary: hits    5.910 ± 0.060M/s (  5.910M/prod), drops    0.000 ± 0.000M/s, total operations    5.910 ± 0.060M/s
+
+### typical1000_compact_early_miss
+Iter   0 ( 67.100us): hits    8.382M/s (  8.382M/prod), drops    0.000M/s, total operations    8.382M/s
+Iter   1 ( -2.077us): hits    7.978M/s (  7.978M/prod), drops    0.000M/s, total operations    7.978M/s
+Iter   2 (113.275us): hits    8.068M/s (  8.068M/prod), drops    0.000M/s, total operations    8.068M/s
+Iter   3 (-14.781us): hits    7.963M/s (  7.963M/prod), drops    0.000M/s, total operations    7.963M/s
+Iter   4 ( -6.042us): hits    8.353M/s (  8.353M/prod), drops    0.000M/s, total operations    8.353M/s
+Summary: hits    8.091 ± 0.181M/s (  8.091M/prod), drops    0.000 ± 0.000M/s, total operations    8.091 ± 0.181M/s
+
+### typical1000_compact_late_miss
+Iter   0 (227.557us): hits    5.978M/s (  5.978M/prod), drops    0.000M/s, total operations    5.978M/s
+Iter   1 ( 34.736us): hits    5.919M/s (  5.919M/prod), drops    0.000M/s, total operations    5.919M/s
+Iter   2 (-59.874us): hits    5.784M/s (  5.784M/prod), drops    0.000M/s, total operations    5.784M/s
+Iter   3 ( 65.031us): hits    5.926M/s (  5.926M/prod), drops    0.000M/s, total operations    5.926M/s
+Iter   4 (-29.053us): hits    5.841M/s (  5.841M/prod), drops    0.000M/s, total operations    5.841M/s
+Summary: hits    5.867 ± 0.068M/s (  5.867M/prod), drops    0.000 ± 0.000M/s, total operations    5.867 ± 0.068M/s
+
+### typical1000_lpm_hit
+iograph_lpm_prefixes=1000
+Iter   0 (223.107us): hits    3.426M/s (  3.426M/prod), drops    0.000M/s, total operations    3.426M/s
+Iter   1 (-101.326us): hits    3.477M/s (  3.477M/prod), drops    0.000M/s, total operations    3.477M/s
+Iter   2 (-11.582us): hits    3.431M/s (  3.431M/prod), drops    0.000M/s, total operations    3.431M/s
+Iter   3 ( -3.447us): hits    3.463M/s (  3.463M/prod), drops    0.000M/s, total operations    3.463M/s
+Iter   4 (100.135us): hits    3.544M/s (  3.544M/prod), drops    0.000M/s, total operations    3.544M/s
+Summary: hits    3.479 ± 0.047M/s (  3.479M/prod), drops    0.000 ± 0.000M/s, total operations    3.479 ± 0.047M/s
+
+### typical1000_compact_prefilter_drop
+Iter   0 (174.452us): hits    0.000M/s (  0.000M/prod), drops    5.974M/s, total operations    5.974M/s
+Iter   1 ( 10.619us): hits    0.000M/s (  0.000M/prod), drops    5.996M/s, total operations    5.996M/s
+Iter   2 (-45.197us): hits    0.000M/s (  0.000M/prod), drops    5.929M/s, total operations    5.929M/s
+Iter   3 ( 30.800us): hits    0.000M/s (  0.000M/prod), drops    5.941M/s, total operations    5.941M/s
+Iter   4 (-89.187us): hits    0.000M/s (  0.000M/prod), drops    5.957M/s, total operations    5.957M/s
+Summary: hits    0.000 ± 0.000M/s (  0.000M/prod), drops    5.956 ± 0.029M/s, total operations    5.956 ± 0.029M/s
+
+### typical1000_lpm_prefilter_drop
+iograph_lpm_prefixes=1000
+Iter   0 (270.929us): hits    0.000M/s (  0.000M/prod), drops    3.494M/s, total operations    3.494M/s
+Iter   1 (-152.070us): hits    0.000M/s (  0.000M/prod), drops    3.449M/s, total operations    3.449M/s
+Iter   2 ( 42.999us): hits    0.000M/s (  0.000M/prod), drops    3.522M/s, total operations    3.522M/s
+Iter   3 (  5.700us): hits    0.000M/s (  0.000M/prod), drops    3.503M/s, total operations    3.503M/s
+Iter   4 (  1.219us): hits    0.000M/s (  0.000M/prod), drops    3.495M/s, total operations    3.495M/s
+Summary: hits    0.000 ± 0.000M/s (  0.000M/prod), drops    3.492 ± 0.031M/s, total operations    3.492 ± 0.031M/s
+
+### shared1000_compact_hit
+Iter   0 (282.331us): hits    6.349M/s (  6.349M/prod), drops    0.000M/s, total operations    6.349M/s
+Iter   1 (  6.770us): hits    6.269M/s (  6.269M/prod), drops    0.000M/s, total operations    6.269M/s
+Iter   2 (-108.466us): hits    6.299M/s (  6.299M/prod), drops    0.000M/s, total operations    6.299M/s
+Iter   3 (-11.913us): hits    6.218M/s (  6.218M/prod), drops    0.000M/s, total operations    6.218M/s
+Iter   4 (-69.331us): hits    6.241M/s (  6.241M/prod), drops    0.000M/s, total operations    6.241M/s
+Summary: hits    6.256 ± 0.035M/s (  6.256M/prod), drops    0.000 ± 0.000M/s, total operations    6.256 ± 0.035M/s
+
+### shared1000_lpm_hit
+iograph_lpm_prefixes=1000
+Iter   0 (177.001us): hits    2.107M/s (  2.107M/prod), drops    0.000M/s, total operations    2.107M/s
+Iter   1 (-88.682us): hits    2.100M/s (  2.100M/prod), drops    0.000M/s, total operations    2.100M/s
+Iter   2 (  9.301us): hits    2.100M/s (  2.100M/prod), drops    0.000M/s, total operations    2.100M/s
+Iter   3 (116.457us): hits    2.074M/s (  2.074M/prod), drops    0.000M/s, total operations    2.074M/s
+Iter   4 (-53.814us): hits    2.117M/s (  2.117M/prod), drops    0.000M/s, total operations    2.117M/s
+Summary: hits    2.098 ± 0.017M/s (  2.098M/prod), drops    0.000 ± 0.000M/s, total operations    2.098 ± 0.017M/s
+
+### long1000_compact_hit
+Iter   0 (180.983us): hits    6.198M/s (  6.198M/prod), drops    0.000M/s, total operations    6.198M/s
+Iter   1 (-15.840us): hits    6.151M/s (  6.151M/prod), drops    0.000M/s, total operations    6.151M/s
+Iter   2 ( 12.897us): hits    6.223M/s (  6.223M/prod), drops    0.000M/s, total operations    6.223M/s
+Iter   3 (-82.872us): hits    6.256M/s (  6.256M/prod), drops    0.000M/s, total operations    6.256M/s
+Iter   4 (  2.899us): hits    6.212M/s (  6.212M/prod), drops    0.000M/s, total operations    6.212M/s
+Summary: hits    6.210 ± 0.044M/s (  6.210M/prod), drops    0.000 ± 0.000M/s, total operations    6.210 ± 0.044M/s
+
+### long1000_lpm_hit
+iograph_lpm_prefixes=1000
+Iter   0 (116.889us): hits    1.272M/s (  1.272M/prod), drops    0.000M/s, total operations    1.272M/s
+Iter   1 ( 43.789us): hits    1.283M/s (  1.283M/prod), drops    0.000M/s, total operations    1.283M/s
+Iter   2 ( 39.015us): hits    1.282M/s (  1.282M/prod), drops    0.000M/s, total operations    1.282M/s
+Iter   3 ( -2.631us): hits    1.258M/s (  1.258M/prod), drops    0.000M/s, total operations    1.258M/s
+Iter   4 (-50.965us): hits    1.227M/s (  1.227M/prod), drops    0.000M/s, total operations    1.227M/s
+Summary: hits    1.263 ± 0.026M/s (  1.263M/prod), drops    0.000 ± 0.000M/s, total operations    1.263 ± 0.026M/s
+
+log=/tmp/io_graph_policy/kernel_compact_rawtp_2026-05-23.log
