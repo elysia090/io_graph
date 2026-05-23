@@ -152,11 +152,18 @@ The copied userspace and kernel graph objects inline accept codes after blob
 verification by rewriting each runtime node's accepted ID into the action code.
 The verified source blob format still carries `accept_id -> accept_code`, but
 the run path does not need an `accepts[]` lookup on every accepting node.
+Accepting leaf nodes are emitted with `IOG_NODE_F_FINAL_ACTION`, which lets the
+last-accept action walker return early without changing longest-match
+semantics for nodes that still have outgoing override edges.
 
 `io_graph_accept_inline_first_final_action` returns at the first non-zero
 action. That path is only the right semantics when the caller knows the
 accepted action is final, such as a prefix DROP policy with no longer override.
 Longest-match policies stay on `io_graph_accept_inline_last_accept`.
+
+`default_dst` is treated as a consuming else transition in v0: explicit edge
+miss moves to `default_dst` and consumes one input byte. It is not a
+non-consuming fallback chain.
 
 The current C rows are:
 

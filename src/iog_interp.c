@@ -187,8 +187,11 @@ u32 iog_run_action_entry(const struct iog_graph *graph, const u8 *buf,
 		if (likely(!accept_id))
 			continue;
 		state_action = iog_node_accept_value(graph, accepts, accept_id);
-		if (state_action)
+		if (state_action) {
 			action = state_action;
+			if (node->flags & IOG_NODE_F_FINAL_ACTION)
+				return action;
+		}
 	}
 
 	return action;

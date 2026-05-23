@@ -11,8 +11,8 @@ _Static_assert(sizeof(struct iog_entry) == 8, "bad iog_entry size");
 _Static_assert(sizeof(struct iog_accept) == 8, "bad iog_accept size");
 
 const struct iog_limits iog_default_limits = {
-	.max_nodes = 1000000,
-	.max_edges = 4000000,
+	.max_nodes = 250000,
+	.max_edges = 500000,
 	.max_entries = 64,
 	.max_accepts = 65536,
 	.max_alphabet = 256,

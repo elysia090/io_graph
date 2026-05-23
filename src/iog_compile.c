@@ -276,6 +276,8 @@ int iog_compile_prefixes(const struct iog_prefix *prefixes, size_t nr,
 	for (i = 0; i < node_cnt; i++) {
 		out_nodes[i].edge_start = edge_pos;
 		out_nodes[i].edge_cnt = nodes[i].edge_cnt;
+		if (nodes[i].accept_id && !nodes[i].edge_cnt)
+			out_nodes[i].flags = IOG_NODE_F_FINAL_ACTION;
 		out_nodes[i].default_dst = IOG_NO_STATE;
 		out_nodes[i].accept_id = nodes[i].accept_id;
 

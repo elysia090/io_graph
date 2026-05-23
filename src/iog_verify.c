@@ -11,6 +11,7 @@ int iog_verify_blob(const void *blob, size_t len,
 	const struct iog_edge *edges;
 	const struct iog_entry *entries;
 	const struct iog_accept *accepts;
+	size_t accepts_end;
 	u32 i;
 
 	if (!blob || len < sizeof(*hdr)) {
@@ -85,6 +86,12 @@ int iog_verify_blob(const void *blob, size_t len,
 		iog_set_err(err, err_len, "non-canonical section order");
 		return -EINVAL;
 	}
+	accepts_end = hdr->accepts_off +
+		      (size_t)hdr->accept_cnt * sizeof(struct iog_accept);
+	if (accepts_end != hdr->total_size) {
+		iog_set_err(err, err_len, "trailing bytes after accepts");
+		return -EINVAL;
+	}
 
 	nodes = (const void *)((const u8 *)blob + hdr->nodes_off);
 	edges = (const void *)((const u8 *)blob + hdr->edges_off);
@@ -111,8 +118,14 @@ int iog_verify_blob(const void *blob, size_t len,
 		bool have_prev = false;
 		u32 j;
 
-		if (node->flags) {
+		if (node->flags & ~IOG_NODE_FLAG_MASK) {
 			iog_set_err(err, err_len, "unknown node flags");
+			return -EINVAL;
+		}
+		if ((node->flags & IOG_NODE_F_FINAL_ACTION) &&
+		    !node->accept_id) {
+			iog_set_err(err, err_len,
+				    "final-action node has no accept id");
 			return -EINVAL;
 		}
 		if (node->edge_start > hdr->edge_cnt ||
@@ -150,23 +163,6 @@ int iog_verify_blob(const void *blob, size_t len,
 			}
 			prev_hi = edge->sym_hi;
 			have_prev = true;
-		}
-	}
-
-	for (i = 0; i < hdr->node_cnt; i++) {
-		u32 state = i, depth;
-
-		for (depth = 0; depth <= IOG_MAX_DEFAULT_DEPTH; depth++) {
-			u32 next = nodes[state].default_dst;
-
-			if (next == IOG_NO_STATE)
-				break;
-			if (depth == IOG_MAX_DEFAULT_DEPTH) {
-				iog_set_err(err, err_len,
-					    "default chain exceeds bound");
-				return -EINVAL;
-			}
-			state = next;
 		}
 	}
 

@@ -26,6 +26,11 @@ Current kernel-side v0 coverage:
 - graph publication rewrites accept IDs in the copied runtime object into
   action codes, so accepting nodes do not need a second `accepts[]` lookup on
   the run path;
+- accepting leaf nodes carry `IOG_NODE_F_FINAL_ACTION`, letting `run_action`
+  return at a final prefix without changing longest-match semantics for
+  accepting nodes that still have outgoing edges;
+- `default_dst` is v0's consuming else transition, not a non-consuming fallback
+  chain;
 - BPF kfunc reads reuse the BPF program's existing RCU read-side protection
   instead of nesting another RCU section per graph decision;
 - hook-adjacent DROP benches count producer triggers outside BPF in batches so

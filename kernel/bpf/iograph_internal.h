@@ -8,8 +8,8 @@
 #include <uapi/linux/bpf_iograph.h>
 
 #define BPF_IOGRAPH_MAX_BLOB_SIZE	(8u << 20)
-#define BPF_IOGRAPH_MAX_NODES		1000000u
-#define BPF_IOGRAPH_MAX_EDGES		4000000u
+#define BPF_IOGRAPH_MAX_NODES		250000u
+#define BPF_IOGRAPH_MAX_EDGES		500000u
 #define BPF_IOGRAPH_MAX_ENTRIES		64u
 #define BPF_IOGRAPH_MAX_ACCEPTS		65536u
 #define BPF_IOGRAPH_MAX_INPUT_LEN	65536u
@@ -21,7 +21,6 @@ struct bpf_iograph_graph {
 	u32 single_entry_id;
 	u32 single_entry_state;
 	bool single_entry;
-	bool accept_codes_inline;
 	const struct iog_blob_hdr *hdr;
 	const struct iog_node *nodes;
 	const struct iog_edge *edges;

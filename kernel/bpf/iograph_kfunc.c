@@ -14,20 +14,8 @@ static __always_inline u32
 iograph_node_accept_code(const struct bpf_iograph_graph *graph,
 			 const struct iog_node *node)
 {
-	u32 id = node->accept_id;
-
-	if (graph->accept_codes_inline)
-		return id;
-	return id ? graph->accepts[id].code : 0;
-}
-
-static __always_inline u32
-iograph_node_accept_value(const struct bpf_iograph_graph *graph,
-			  const struct iog_accept *accepts, u32 accept_id)
-{
-	if (graph->accept_codes_inline)
-		return accept_id;
-	return accepts[accept_id].code;
+	(void)graph;
+	return node->accept_id;
 }
 
 static __always_inline u32
@@ -116,7 +104,6 @@ static u32 iograph_walk_result(const struct bpf_iograph_graph *graph,
 			       const u8 *buf, u32 len, u32 state,
 			       u32 *final_state)
 {
-	const struct iog_accept *accepts = graph->accepts;
 	const struct iog_edge *edges = graph->edges;
 	const struct iog_node *nodes = graph->nodes;
 	const struct iog_node *node = &nodes[state];
@@ -134,8 +121,7 @@ static u32 iograph_walk_result(const struct bpf_iograph_graph *graph,
 		accept_id = node->accept_id;
 		if (likely(!accept_id))
 			continue;
-		state_action = iograph_node_accept_value(graph, accepts,
-							 accept_id);
+		state_action = accept_id;
 		if (state_action)
 			action = state_action;
 	}
@@ -147,7 +133,6 @@ static u32 iograph_walk_result(const struct bpf_iograph_graph *graph,
 static u32 iograph_walk_action(const struct bpf_iograph_graph *graph,
 			       const u8 *buf, u32 len, u32 state)
 {
-	const struct iog_accept *accepts = graph->accepts;
 	const struct iog_edge *edges = graph->edges;
 	const struct iog_node *nodes = graph->nodes;
 	const struct iog_node *node = &nodes[state];
@@ -164,10 +149,12 @@ static u32 iograph_walk_action(const struct bpf_iograph_graph *graph,
 		accept_id = node->accept_id;
 		if (likely(!accept_id))
 			continue;
-		state_action = iograph_node_accept_value(graph, accepts,
-							 accept_id);
-		if (state_action)
+		state_action = accept_id;
+		if (state_action) {
 			action = state_action;
+			if (node->flags & IOG_NODE_F_FINAL_ACTION)
+				return action;
+		}
 	}
 
 	return action;

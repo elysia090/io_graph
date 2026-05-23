@@ -8,7 +8,7 @@ The active result track is the kernel prototype:
 | Track | Current status | Evidence |
 |:---|:---|:---|
 | map type | source split into map and kfunc units with RCU whole-graph replacement | `kernel/bpf/` |
-| blob verifier | map update rejects bad layout, bounds, default chains, count caps, and blob-size caps | `kernel/bpf/iograph_map.c` |
+| blob verifier | map update rejects bad layout, bounds, unknown flags, count caps, and blob-size caps | `kernel/bpf/iograph_map.c` |
 | interpreter | required non-JIT execution path with sparse edge walk | `kernel/bpf/iograph_kfunc.c` |
 | kfunc API | action-only prefilter kfunc plus run/step observation paths, verifier annotations, tracing-hook registration | `kernel/bpf/iograph_kfunc.c` |
 | selftest | bad blob update rejection plus DROP-before-ringbuf-reserve path | `kernel/selftests/bpf/` |

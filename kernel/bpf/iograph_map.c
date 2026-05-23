@@ -57,7 +57,7 @@ static bool iog_layout_end(u32 off, u32 cnt, size_t elem_sz, u32 *end)
 	return true;
 }
 
-static int iog_verify_blob(const void *blob, u32 len)
+static int iog_verify_blob(const void *blob, u32 value_size, u32 *blob_len)
 {
 	const struct iog_blob_hdr *hdr = blob;
 	const u8 *base = blob;
@@ -68,13 +68,13 @@ static int iog_verify_blob(const void *blob, u32 len)
 	u32 expected_off;
 	u32 i;
 
-	if (!blob || len < sizeof(*hdr))
+	if (!blob || value_size < sizeof(*hdr) || !blob_len)
 		return -EINVAL;
 	if (hdr->magic != IOG_MAGIC || hdr->version != IOG_VERSION)
 		return -EINVAL;
 	if (hdr->flags || hdr->reserved)
 		return -EINVAL;
-	if (hdr->total_size != len)
+	if (hdr->total_size < sizeof(*hdr) || hdr->total_size > value_size)
 		return -EINVAL;
 	if (hdr->total_size > BPF_IOGRAPH_MAX_BLOB_SIZE)
 		return -E2BIG;
@@ -91,13 +91,13 @@ static int iog_verify_blob(const void *blob, u32 len)
 	if ((hdr->nodes_off | hdr->edges_off |
 	     hdr->entries_off | hdr->accepts_off) & 3)
 		return -EINVAL;
-	if (!iog_u32_array_fits(len, hdr->nodes_off, hdr->node_cnt,
+	if (!iog_u32_array_fits(hdr->total_size, hdr->nodes_off, hdr->node_cnt,
 				sizeof(struct iog_node)) ||
-	    !iog_u32_array_fits(len, hdr->edges_off, hdr->edge_cnt,
+	    !iog_u32_array_fits(hdr->total_size, hdr->edges_off, hdr->edge_cnt,
 				sizeof(struct iog_edge)) ||
-	    !iog_u32_array_fits(len, hdr->entries_off, hdr->entry_cnt,
+	    !iog_u32_array_fits(hdr->total_size, hdr->entries_off, hdr->entry_cnt,
 				sizeof(struct iog_entry)) ||
-	    !iog_u32_array_fits(len, hdr->accepts_off, hdr->accept_cnt,
+	    !iog_u32_array_fits(hdr->total_size, hdr->accepts_off, hdr->accept_cnt,
 				sizeof(struct iog_accept)))
 		return -EINVAL;
 	if (hdr->nodes_off != sizeof(*hdr) ||
@@ -136,7 +136,10 @@ static int iog_verify_blob(const void *blob, u32 len)
 		bool have_prev = false;
 		u32 j;
 
-		if (node->flags)
+		if (node->flags & ~IOG_NODE_FLAG_MASK)
+			return -EINVAL;
+		if ((node->flags & IOG_NODE_F_FINAL_ACTION) &&
+		    !node->accept_id)
 			return -EINVAL;
 		if (node->edge_start > hdr->edge_cnt ||
 		    node->edge_cnt > hdr->edge_cnt - node->edge_start)
@@ -163,20 +166,7 @@ static int iog_verify_blob(const void *blob, u32 len)
 		}
 	}
 
-	for (i = 0; i < hdr->node_cnt; i++) {
-		u32 state = i, depth;
-
-		for (depth = 0; depth <= IOG_MAX_DEFAULT_DEPTH; depth++) {
-			u32 next = nodes[state].default_dst;
-
-			if (next == IOG_NO_STATE)
-				break;
-			if (depth == IOG_MAX_DEFAULT_DEPTH)
-				return -EINVAL;
-			state = next;
-		}
-	}
-
+	*blob_len = hdr->total_size;
 	return 0;
 }
 
@@ -191,7 +181,6 @@ static void iograph_graph_inline_accept_codes(struct bpf_iograph_graph *graph)
 		nodes[i].accept_id = accept_id ? graph->accepts[accept_id].code :
 					     0;
 	}
-	graph->accept_codes_inline = true;
 }
 
 static struct bpf_iograph_graph *iograph_graph_alloc(const void *value,
@@ -199,19 +188,20 @@ static struct bpf_iograph_graph *iograph_graph_alloc(const void *value,
 						     int numa_node)
 {
 	struct bpf_iograph_graph *graph;
+	u32 blob_len;
 	int ret;
 
-	ret = iog_verify_blob(value, value_size);
+	ret = iog_verify_blob(value, value_size, &blob_len);
 	if (ret)
 		return ERR_PTR(ret);
 
-	graph = kvzalloc_node(struct_size(graph, blob, value_size),
+	graph = kvzalloc_node(struct_size(graph, blob, blob_len),
 			      GFP_KERNEL_ACCOUNT, numa_node);
 	if (!graph)
 		return ERR_PTR(-ENOMEM);
 
-	memcpy(graph->blob, value, value_size);
-	graph->blob_len = value_size;
+	memcpy(graph->blob, value, blob_len);
+	graph->blob_len = blob_len;
 	graph->hdr = (const void *)graph->blob;
 	graph->nodes = (const void *)(graph->blob + graph->hdr->nodes_off);
 	graph->edges = (const void *)(graph->blob + graph->hdr->edges_off);
