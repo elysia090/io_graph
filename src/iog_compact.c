@@ -107,6 +107,8 @@ static int build_keep_set(const struct iog_graph *graph, bool *keep,
 		if (node->accept_id || node->flags ||
 		    node->default_dst != IOG_NO_STATE || node->edge_cnt != 1)
 			keep[i] = true;
+		else if (!byte_edge(&graph->edges[node->edge_start]))
+			keep[i] = true;
 		if (node->default_dst != IOG_NO_STATE) {
 			incoming[node->default_dst]++;
 			keep[node->default_dst] = true;
@@ -213,7 +215,7 @@ static int count_compact_storage(const struct iog_graph *graph,
 				clen = chain_len_to_kept(graph, keep,
 							 edge->dst);
 			if (clen > 1) {
-				if (clen > UINT16_MAX)
+				if (UINT32_MAX - lits < clen)
 					return -E2BIG;
 				lits += clen;
 			}
@@ -305,7 +307,7 @@ static int build_cgraph_edges(const struct iog_graph *graph, const bool *keep,
 			if (clen > 1) {
 				cedge->flags = IOG_CEDGE_LITERAL;
 				cedge->lit_off = lit_pos;
-				cedge->lit_len = (u16)clen;
+				cedge->lit_len = clen;
 				copy_chain_literal(graph, keep, edge,
 						   &cg->lits[lit_pos]);
 				lit_pos += clen;
@@ -494,6 +496,7 @@ u32 iog_cgraph_count_transitions(const struct iog_cgraph *cg, const u8 *buf,
 int iog_cgraph_stats(const struct iog_cgraph *cg,
 		     struct iog_cgraph_stats *stats)
 {
+	u32 *depth = NULL;
 	u32 i;
 
 	if (!cg || !stats)
@@ -514,6 +517,46 @@ int iog_cgraph_stats(const struct iog_cgraph *cg,
 		if (edge->lit_len > stats->max_literal_len)
 			stats->max_literal_len = edge->lit_len;
 	}
+	for (i = 0; i < cg->node_cnt; i++) {
+		if (cg->nodes[i].edge_cnt > stats->max_fanout)
+			stats->max_fanout = cg->nodes[i].edge_cnt;
+	}
+
+	depth = calloc(cg->node_cnt ? cg->node_cnt : 1, sizeof(*depth));
+	if (!depth)
+		return -ENOMEM;
+
+	stats->depth_complete = true;
+	for (i = cg->node_cnt; i > 0; i--) {
+		const struct iog_cnode *node = &cg->nodes[i - 1];
+		u32 best = 0;
+		u32 j;
+
+		for (j = 0; j < node->edge_cnt; j++) {
+			const struct iog_cedge *edge =
+				&cg->edges[node->edge_start + j];
+
+			if (edge->dst <= i - 1 || edge->dst >= cg->node_cnt) {
+				stats->depth_complete = false;
+				continue;
+			}
+			if (depth[edge->dst] + 1 > best)
+				best = depth[edge->dst] + 1;
+		}
+		if (node->default_dst != IOG_NO_STATE) {
+			if (node->default_dst <= i - 1 ||
+			    node->default_dst >= cg->node_cnt) {
+				stats->depth_complete = false;
+			} else if (depth[node->default_dst] + 1 > best) {
+				best = depth[node->default_dst] + 1;
+			}
+		}
+		depth[i - 1] = best;
+		if (best > stats->max_depth)
+			stats->max_depth = best;
+	}
+
+	free(depth);
 
 	return 0;
 }

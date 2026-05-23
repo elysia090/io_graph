@@ -16,7 +16,7 @@ struct iog_cnode {
 struct iog_cedge {
 	u32 dst;
 	u32 lit_off;
-	u16 lit_len;
+	u32 lit_len;
 	u8 sym_lo;
 	u8 sym_hi;
 	u8 flags;
@@ -43,6 +43,9 @@ struct iog_cgraph_stats {
 	u32 literal_edges;
 	u32 literal_bytes;
 	u32 max_literal_len;
+	u32 max_fanout;
+	u32 max_depth;
+	bool depth_complete;
 	u64 mem_bytes;
 };
 

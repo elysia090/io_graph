@@ -68,8 +68,8 @@ microbenchmark:
 | `decision cost` | direct C call | prebuilt selector samples | none |
 | `bpf event path` | userspace BPF-shaped model | prebuilt selector samples | POST copies 300 B, 800 B, or 2 KiB |
 | `iograph-hook-floor` | `raw_tp/sys_enter`, triggered by `getpgid` | none | no graph lookup, batched host trigger counter |
-| `iograph-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only, batched host trigger counter |
-| `iograph-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | current kernel bench event is small |
+| `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; after compact publication this is the compact `run_action()` path |
+| `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; compact name is the explicit current row |
 | `iograph-lpm-decision` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | action only, batched host trigger counter |
 | `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus LPM key scratch | current kernel bench event is small |
 
@@ -152,6 +152,10 @@ The copied userspace and kernel graph objects inline accept codes after blob
 verification by rewriting each runtime node's accepted ID into the action code.
 The verified source blob format still carries `accept_id -> accept_code`, but
 the run path does not need an `accepts[]` lookup on every accepting node.
+The kernel publication path then derives a compact runtime graph for the
+action-only prefilter path: single-child byte chains become literal-run edges,
+while range edges, accepting nodes, final-action nodes, entry states, and
+consuming else transitions remain explicit graph nodes.
 Accepting leaf nodes are emitted with `IOG_NODE_F_FINAL_ACTION`, which lets the
 last-accept action walker return early without changing longest-match
 semantics for nodes that still have outgoing override edges.
@@ -174,7 +178,7 @@ The current C rows are:
 | `io_graph 100 prefix accept-early-return` | hit input with suffix, first-final-action walker |
 | `io_graph 100 prefix longest-match` | hit input with suffix, last-accept walker |
 | `io_graph 1000 with accept_code inline` | same table, `io_graph_accept_inline_*` matcher rows |
-| `io_graph 1000 with single-child chain compression` | `io_graph_compact_chain`, a runtime-only graph built from the verified byte-trie blob |
+| `io_graph 1000 with single-child chain compression` | `io_graph_compact_chain`, a runtime-only graph built from the verified byte-trie blob; kernel `run_action()` uses the same compact shape after map publication |
 
 The remaining optimization rows must stay separate instead of borrowing
 interpreter numbers:
@@ -188,6 +192,12 @@ edge advances, not the byte-trie transition count. JIT rows still require the
 JIT image being measured. The table schema is normalized for all of them: mean
 ns/op, mean ns/input byte, mean ns/successful transition, and batch
 p95/p99/p999 ns/op.
+
+The compact runtime graph stats table also reports compact nodes/edges,
+literal edge count, literal pool bytes, mean and max literal length, max
+compact fanout, and max compact depth when the runtime graph is acyclic in
+publication order. Cyclic graphs keep the depth column explicit as `cyclic`
+instead of pretending there is a finite longest path.
 
 ## Reject Mix
 

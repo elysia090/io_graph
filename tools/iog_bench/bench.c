@@ -1372,12 +1372,20 @@ int main(int argc, char **argv)
 		       layout.binary_fanout_nodes, layout.max_fanout);
 
 		printf("\ncompact runtime graph\n");
-		printf("| prefixes | compact_nodes | compact_edges | literal_edges | literal_bytes | max_literal_len | compact_runtime_B |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu64 " |\n",
+		printf("| prefixes | compact_nodes | compact_edges | literal_edges | literal_bytes | mean_literal_len | max_literal_len | max_fanout | max_compact_depth | compact_runtime_B |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %.2f | %" PRIu32 " | %" PRIu32 " | ",
 		       counts[ci], compact_stats.nodes, compact_stats.edges,
 		       compact_stats.literal_edges, compact_stats.literal_bytes,
-		       compact_stats.max_literal_len, compact_stats.mem_bytes);
+		       compact_stats.literal_edges ?
+		       (double)compact_stats.literal_bytes /
+		       (double)compact_stats.literal_edges : 0.0,
+		       compact_stats.max_literal_len, compact_stats.max_fanout);
+		if (compact_stats.depth_complete)
+			printf("%" PRIu32, compact_stats.max_depth);
+		else
+			printf("cyclic");
+		printf(" | %" PRIu64 " |\n", compact_stats.mem_bytes);
 
 		printf("\nbpf map update\n");
 		printf("| prefixes | verify_us | map_update_us | update_iters | active_mem_B | retired_graphs | retired_mem_B | total_mem_B | reclaim_us | reclaimed_graphs | update_seq |\n");

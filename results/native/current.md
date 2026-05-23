@@ -5,6 +5,14 @@ Date: 2026-05-21
 This file records the current kernel-backed measurement rows. They are separate
 from the frozen userspace proof in `results/userspace/current.md`.
 
+Update note, 2026-05-23: the source tree now builds a runtime compact graph at
+map publication and routes `bpf_iograph_run_action()` through that compact
+graph. The measured rows below predate that change and remain the last
+byte-trie action-kfunc snapshot until a patched kernel is rebuilt, booted, and
+rerun. The selftests bench source now also provides explicit
+`iograph-compact-decision` and `iograph-compact-prefilter` aliases for those
+refreshed rows.
+
 The measured rows below are the last typed-tracepoint snapshot. The bench source
 now uses `raw_tp/sys_enter` and batches producer trigger accounting to remove
 per-trigger bookkeeping from the fixed-cost path; refresh these rows after the

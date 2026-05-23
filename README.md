@@ -10,10 +10,10 @@ The userspace proof is complete; active work is the kernel v0 path in
 - interpreter kfuncs matching `SPEC.md`;
 - pre-ringbuf BPF demo and selftests.
 
-The userspace benchmark also carries a runtime-only compact graph builder that
-folds verified single-child byte chains into literal-run edges. This is the
-current non-JIT matched-path optimization target before moving it into the
-kernel object layout.
+The userspace benchmark and kernel map publication path both build a
+runtime-only compact graph that folds verified single-child byte chains into
+literal-run edges. The source blob remains the verified byte-trie artifact;
+`run_action()` uses the compact runtime graph for the pre-emission hot path.
 
 Run:
 

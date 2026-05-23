@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/rcupdate.h>
 #include <linux/rcupdate_trace.h>
+#include <linux/string.h>
 
 #include "iograph_internal.h"
 
@@ -130,28 +131,111 @@ static u32 iograph_walk_result(const struct bpf_iograph_graph *graph,
 	return action;
 }
 
-static u32 iograph_walk_action(const struct bpf_iograph_graph *graph,
-			       const u8 *buf, u32 len, u32 state)
+static __always_inline int
+iograph_compact_entry_state(const struct bpf_iograph_graph *graph,
+			    u32 entry_id, u32 *state)
 {
-	const struct iog_edge *edges = graph->edges;
-	const struct iog_node *nodes = graph->nodes;
-	const struct iog_node *node = &nodes[state];
-	u32 action = iograph_node_accept_code(graph, node);
 	u32 i;
 
-	for (i = 0; i < len; i++) {
-		u32 next = iograph_node_next_state(edges, node, buf[i]);
-		u32 accept_id, state_action;
+	if (likely(graph->single_entry &&
+		   graph->single_entry_id == entry_id)) {
+		*state = graph->compact_single_entry_state;
+		return 0;
+	}
 
-		if (next == IOG_NO_STATE)
-			break;
-		node = &nodes[next];
-		accept_id = node->accept_id;
-		if (likely(!accept_id))
-			continue;
-		state_action = accept_id;
-		if (state_action) {
-			action = state_action;
+	for (i = 0; i < graph->hdr->entry_cnt; i++) {
+		if (graph->compact_entries[i].id == entry_id) {
+			*state = graph->compact_entries[i].state;
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+
+static __always_inline u32
+iograph_cnode_next_edge(const struct bpf_iograph_graph *graph,
+			const struct bpf_iograph_cnode *node, u8 sym)
+{
+	const struct bpf_iograph_cedge *edges;
+	u32 lo = 0, hi = node->edge_cnt;
+	u32 i;
+
+	if (!node->edge_cnt)
+		return IOG_NO_STATE;
+
+	edges = &graph->compact_edges[node->edge_start];
+	if (likely(node->edge_cnt == 1)) {
+		const struct bpf_iograph_cedge *edge = edges;
+
+		if (sym < edge->sym_lo || sym > edge->sym_hi)
+			return IOG_NO_STATE;
+		return node->edge_start;
+	}
+
+	if (likely(node->edge_cnt <= 4)) {
+		for (i = 0; i < node->edge_cnt; i++) {
+			const struct bpf_iograph_cedge *edge = &edges[i];
+
+			if (sym < edge->sym_lo)
+				break;
+			if (sym <= edge->sym_hi)
+				return node->edge_start + i;
+		}
+		return IOG_NO_STATE;
+	}
+
+	while (lo < hi) {
+		u32 mid = lo + (hi - lo) / 2;
+		const struct bpf_iograph_cedge *edge = &edges[mid];
+
+		if (sym < edge->sym_lo)
+			hi = mid;
+		else if (sym > edge->sym_hi)
+			lo = mid + 1;
+		else
+			return node->edge_start + mid;
+	}
+
+	return IOG_NO_STATE;
+}
+
+static u32 iograph_walk_action_compact(const struct bpf_iograph_graph *graph,
+				       const u8 *buf, u32 len, u32 state)
+{
+	const struct bpf_iograph_cnode *node = &graph->compact_nodes[state];
+	u32 action = node->action_code;
+	u32 i = 0;
+
+	if (action && (node->flags & IOG_NODE_F_FINAL_ACTION))
+		return action;
+
+	while (i < len) {
+		u32 edge_idx = iograph_cnode_next_edge(graph, node, buf[i]);
+		const struct bpf_iograph_cedge *edge;
+
+		if (edge_idx == IOG_NO_STATE) {
+			if (node->default_dst == IOG_NO_STATE)
+				break;
+			node = &graph->compact_nodes[node->default_dst];
+			i++;
+		} else {
+			edge = &graph->compact_edges[edge_idx];
+			if (edge->flags & BPF_IOGRAPH_CEDGE_LITERAL) {
+				if (len - i < edge->lit_len ||
+				    memcmp(buf + i,
+					   graph->compact_lits + edge->lit_off,
+					   edge->lit_len))
+					break;
+				i += edge->lit_len;
+			} else {
+				i++;
+			}
+			node = &graph->compact_nodes[edge->dst];
+		}
+
+		if (node->action_code) {
+			action = node->action_code;
 			if (node->flags & IOG_NODE_F_FINAL_ACTION)
 				return action;
 		}
@@ -208,10 +292,10 @@ __bpf_kfunc u32 bpf_iograph_run_action(struct bpf_map *map, const u8 *buf,
 	imap = container_of(map, struct bpf_iograph_map, map);
 	graph = iograph_active_graph(imap);
 	if (!graph || len > graph->max_input_len ||
-	    iograph_entry_state(graph, entry_id, &state))
+	    iograph_compact_entry_state(graph, entry_id, &state))
 		return 0;
 
-	action = iograph_walk_action(graph, buf, len, state);
+	action = iograph_walk_action_compact(graph, buf, len, state);
 	return action;
 }
 
@@ -234,9 +318,9 @@ __bpf_kfunc u32 bpf_iograph_step(struct bpf_map *map, u32 state, u32 sym)
 }
 
 BTF_KFUNCS_START(iograph_kfunc_ids)
-BTF_ID_FLAGS(func, bpf_iograph_step)
-BTF_ID_FLAGS(func, bpf_iograph_run)
-BTF_ID_FLAGS(func, bpf_iograph_run_action)
+BTF_ID_FLAGS(func, bpf_iograph_step, KF_RCU_PROTECTED)
+BTF_ID_FLAGS(func, bpf_iograph_run, KF_RCU_PROTECTED)
+BTF_ID_FLAGS(func, bpf_iograph_run_action, KF_RCU_PROTECTED)
 BTF_KFUNCS_END(iograph_kfunc_ids)
 
 static const struct btf_kfunc_id_set iograph_kfunc_set = {
