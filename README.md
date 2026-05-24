@@ -40,13 +40,15 @@ path.
 The prototype evaluates raw selector bytes. It does not canonicalize paths,
 resolve symlinks, or provide a security-enforcement boundary by itself.
 Current patched-kernel rows measure a same-hook 1000-prefix compact hit at
-174.25 ns/op, compact DROP at 172.80 ns/op with 0 emitted ringbuf bytes, and
-bounded-copy LPM hit at 246.37 ns/op. Acquisition rows currently copy bounded
+173.01 ns/op, compact DROP at 171.76 ns/op with 0 emitted ringbuf bytes, and
+bounded-copy LPM hit at 236.07 ns/op. Acquisition rows currently copy bounded
 bytes from a preloaded BPF global; real path/cmdline/argv acquisition remains a
 separate kernel evidence row.
-A focused 10000-prefix spot check keeps the claim narrow: LPM_TRIE accepted
-the generated policy, but bounded-copy LPM slowed to 263.37 ns/op while compact
-io_graph stayed at 180.90 ns/op on the same hook path.
+The comprehensive 10000-prefix run keeps the claim narrow: LPM_TRIE accepted
+the generated policies, but bounded-copy LPM measured 261.51 ns/op on typical,
+536.19 ns/op on shared-prefix, and 919.96 ns/op on long-path while compact
+io_graph stayed at 178.54 ns/op, 175.38 ns/op, and 176.06 ns/op respectively
+on the same hook path.
 
 Run:
 
