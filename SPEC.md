@@ -1166,6 +1166,13 @@ run:
   final-state observation
   selftest and debug target
 
+Measurement registration scope:
+  the current out-of-tree WSL measurement prototype registers the kfunc set
+  through the common kfunc hook set so the raw tracepoint bench can load.
+  An upstream candidate must narrow the exposed program types explicitly.
+  The current kfuncs hold a short internal RCU read-side section around the
+  published graph pointer rather than requiring caller-side RCU kfuncs.
+
 ⸻
 
 20. Action Model
@@ -1179,7 +1186,7 @@ The pre-ringbuf filtering workload needs a small decision value, not streaming a
 Recommended reserved action values:
 
 0:
-  no match / default
+  no match / default / fail-open result
 1:
   drop / no-post
 2:
@@ -1188,6 +1195,13 @@ Recommended reserved action values:
   caller-defined class ID, policy ID, or selector ID
 
 Negative-match policies should be represented through action IDs, not through a separate execution mechanism.
+
+`bpf_iograph_run_action()` is fail-open for the prefilter use case: missing
+map graph, invalid entry, too-long input, no match, or internal validation
+failure returns action 0. This is appropriate for "do not drop unless the
+published policy positively says DROP" observability filters. It is not an
+authorization boundary. A fail-closed policy would need an explicit wrapper or
+separate API contract.
 
 Examples:
 
@@ -1217,6 +1231,12 @@ max_entries = 1
 value_size = maximum blob size, or fixed upper bound
 
 v0 accepts only key 0.
+
+NUMA policy:
+  The prototype accepts `BPF_F_NUMA_NODE` because it follows BPF map shape, but
+  an upstream candidate must either reject it for v0 or apply the requested
+  NUMA node consistently to copied blob, compact runtime, and scratch
+  allocation. The current benchmark evidence does not depend on NUMA behavior.
 
 21.2 Map update
 
@@ -1264,6 +1284,14 @@ map_mem_usage must include:
 * compact edges,
 * literal bytes,
 * future JIT image if one is attached.
+
+Derived compact runtime must also be bounded. The current compact block is
+derived from a verified blob and includes entries, compact nodes, compact
+edges, optional dispatch256 tables, and literal tails. A dispatch256 table is
+512 B (`256 * u16`) and is only allocated for high-fanout compact nodes. The
+implementation records `compact_mem_bytes`; an upstream patch should enforce a
+derived compact-runtime cap in addition to `BPF_IOGRAPH_MAX_BLOB_SIZE` so a
+small but adversarial blob cannot publish an unexpectedly large runtime object.
 
 Action-only mode:
 

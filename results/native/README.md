@@ -1,5 +1,9 @@
 # Native Kernel Results
 
+In this directory, "native" means kernel-backed Linux overlay measurements, not
+the userspace proof. The current rows are WSL2 patched-kernel rows unless
+`current.md` explicitly says a PMU-visible native host was used.
+
 Do not paste userspace benchmark numbers here as kernel measurements.
 
 Keep `current.md` honest about the latest overlay/build validation even when

@@ -101,12 +101,18 @@ microbenchmark:
 | `iograph-lpm-prefilter` | same `raw_tp/sys_enter` bench | same selector plus full 256 B LPM key scratch copy | current kernel bench event is small |
 | `iograph-lpm-bounded-decision` | same `raw_tp/sys_enter` bench | same selector plus bounded LPM key scratch copy | action only; copies only `selector_len` bytes into the LPM key |
 | `iograph-lpm-bounded-prefilter` | same `raw_tp/sys_enter` bench | same selector plus bounded LPM key scratch copy | LPM baseline variant that avoids the short-selector 256 B copy penalty |
+| `iograph-compact-acquire-decision` | same `raw_tp/sys_enter` bench | bounded copy from preloaded BPF global into stack buffer | copies `--probe-len` bytes, then runs compact `run_action()` |
+| `iograph-lpm-bounded-acquire-decision` | same `raw_tp/sys_enter` bench | bounded copy from preloaded BPF global into stack buffer, then bounded LPM key copy | exposes selector acquisition plus LPM key materialization |
+| `iograph-discard-after-reserve` | same `raw_tp/sys_enter` bench | preloaded writable BPF global | runs compact decision, then reserves and discards a small event on DROP |
 
 The DROP path reaches the action answer before ringbuf reservation. The POST
 copy rows stay separate because event materialization is the large intermediate
 object being avoided for rejected events. The kernel rows accept
 `--payload-size 300`, `800`, or `2048`; the BPF program uses constant-size
 reserve branches for those cases so the verifier sees bounded record sizes.
+The indexed row also accepts `--entry-id` and `--entry-idx`; multi-entry
+benchmarks should pass the last entry id/index to expose the linear
+`entry_id -> state` lookup cost avoided by `run_action_idx()`.
 
 The kernel DROP rows count triggers in the producer thread in 1024-call
 batches. They do not add a BPF global atomic increment after the action says

@@ -83,7 +83,8 @@ Current kernel-side v0 coverage:
   `iograph-compact-prefilter` aliases so refreshed kernel results can name the
   current compact `run_action()` runtime explicitly;
 - the selftests bench exposes `iograph-compact-idx-decision` for the direct
-  `run_action_idx()` entry-selection path;
+  `run_action_idx()` entry-selection path; pass `--entry-id` and `--entry-idx`
+  with a multi-entry blob to isolate entry lookup cost;
 - the selftests bench has POST payload rows:
   `iograph-compact-post-payload` runs compact `run_action()` before copying a
   fixed 300 B, 800 B, or 2048 B payload, and

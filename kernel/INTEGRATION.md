@@ -227,7 +227,15 @@ Example after building the selftests bench binary:
 ./bench -w 1 -d 5 iograph-compact-decision --blob policy.iog \
 	--selector /drop/event
 ./bench -w 1 -d 5 iograph-compact-idx-decision --blob policy.iog \
-	--selector /drop/event
+	--selector /drop/event --entry-idx 0
+./bench -w 1 -d 5 iograph-compact-decision --blob policy_entries64.iog \
+	--selector /drop/event --entry-id 63
+./bench -w 1 -d 5 iograph-compact-idx-decision --blob policy_entries64.iog \
+	--selector /drop/event --entry-idx 63
+./bench -w 1 -d 5 iograph-compact-acquire-decision --blob policy.iog \
+	--selector /drop/event --probe-len 44
+./bench -w 1 -d 5 iograph-discard-after-reserve --blob policy.iog \
+	--selector /drop/event --drop-action 1
 ./bench -w 1 -d 5 iograph-hook-floor --selector /drop/event
 ./bench -w 1 -d 5 iograph-lpm-decision --prefixes prefixes.txt \
 	--selector /drop/event

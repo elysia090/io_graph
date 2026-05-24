@@ -20,6 +20,9 @@ High-fanout compact nodes can use a derived byte dispatch table, and
 `run_action_idx()` gives loader-known entry indexes a direct entry selection
 path.
 
+The prototype evaluates raw selector bytes. It does not canonicalize paths,
+resolve symlinks, or provide a security-enforcement boundary by itself.
+
 Run:
 
 ```sh
