@@ -532,20 +532,20 @@ The current compact kernel measurement beats the same-hook LPM rows for the
 tested path-prefix policies:
 
 100 typical hit:
-  compact          164.31 ns/op
-  LPM bounded-copy 184.95 ns/op
+  compact          162.84 ns/op
+  LPM bounded-copy 203.29 ns/op
 1000 typical hit:
-  compact          175.59 ns/op
-  LPM bounded-copy 212.40 ns/op
+  compact          174.25 ns/op
+  LPM bounded-copy 246.37 ns/op
 1000 typical DROP:
-  compact          173.25 ns/op
-  LPM bounded-copy 209.29 ns/op
+  compact          172.80 ns/op
+  LPM bounded-copy 245.28 ns/op
 1000 shared-prefix hit:
-  compact          174.67 ns/op
-  LPM bounded-copy 304.14 ns/op
+  compact          165.98 ns/op
+  LPM bounded-copy 453.31 ns/op
 1000 long-path hit:
-  compact          174.70 ns/op
-  LPM bounded-copy 505.31 ns/op
+  compact          169.09 ns/op
+  LPM bounded-copy 768.05 ns/op
 
 This does not make io_graph a replacement for LPM_TRIE. LPM_TRIE remains the
 correct baseline for pure prefix lookup. io_graph is an action policy object
@@ -1233,10 +1233,10 @@ value_size = maximum blob size, or fixed upper bound
 v0 accepts only key 0.
 
 NUMA policy:
-  The prototype accepts `BPF_F_NUMA_NODE` because it follows BPF map shape, but
-  an upstream candidate must either reject it for v0 or apply the requested
-  NUMA node consistently to copied blob, compact runtime, and scratch
-  allocation. The current benchmark evidence does not depend on NUMA behavior.
+  The prototype rejects `BPF_F_NUMA_NODE` for v0. If NUMA placement becomes
+  part of the map ABI later, the requested NUMA node must be applied
+  consistently to copied blob, compact runtime, and scratch allocation. The
+  current benchmark evidence does not depend on NUMA behavior.
 
 21.2 Map update
 
@@ -1290,8 +1290,9 @@ derived from a verified blob and includes entries, compact nodes, compact
 edges, optional dispatch256 tables, and literal tails. A dispatch256 table is
 512 B (`256 * u16`) and is only allocated for high-fanout compact nodes. The
 implementation records `compact_mem_bytes`; an upstream patch should enforce a
-derived compact-runtime cap in addition to `BPF_IOGRAPH_MAX_BLOB_SIZE` so a
-small but adversarial blob cannot publish an unexpectedly large runtime object.
+derived compact-runtime cap in addition to `BPF_IOGRAPH_MAX_BLOB_SIZE`. The
+kernel prototype enforces `BPF_IOGRAPH_MAX_COMPACT_SIZE` so a small but
+adversarial blob cannot publish an unexpectedly large runtime object.
 
 Action-only mode:
 

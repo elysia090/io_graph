@@ -26,7 +26,7 @@
 
 #include "iograph_internal.h"
 
-#define IOG_CREATE_FLAG_MASK	(BPF_F_NUMA_NODE | BPF_F_IOGRAPH_ACTION_ONLY)
+#define IOG_CREATE_FLAG_MASK	BPF_F_IOGRAPH_ACTION_ONLY
 
 static bool iog_u32_array_fits(u32 total, u32 off, u32 cnt, size_t elem_sz)
 {
@@ -448,6 +448,8 @@ static int iograph_compact_alloc_arrays(struct bpf_iograph_graph *graph,
 	    !iograph_compact_add_section(&total, __alignof__(u8), lit_len,
 					 sizeof(*graph->compact_lits),
 					 &lits_off))
+		return -E2BIG;
+	if (total > BPF_IOGRAPH_MAX_COMPACT_SIZE)
 		return -E2BIG;
 
 	data = kvzalloc(total, GFP_KERNEL_ACCOUNT);

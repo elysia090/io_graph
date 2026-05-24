@@ -99,6 +99,16 @@ cd ~/src/wsl2-linux-iograph/tools/testing/selftests/bpf
 	--selector /drop/event \
 	--entry-idx 63
 
+./bench -w 1 -d 5 iograph-compact-decision \
+	--blob /path/to/policy-entries256.iog \
+	--selector /drop/event \
+	--entry-id 255
+
+./bench -w 1 -d 5 iograph-compact-idx-decision \
+	--blob /path/to/policy-entries256.iog \
+	--selector /drop/event \
+	--entry-idx 255
+
 for size in 300 800 2048; do
 	./bench -w 1 -d 5 -c 1 iograph-ringbuf-always-post \
 		--payload-size "$size"
@@ -133,6 +143,10 @@ rows when the LPM key length remains representable.
 | typical | 1000 | hit DROP | iograph-discard-after-reserve | | | | reserve/discard | |
 | typical | 1000 | 64-entry hit | iograph-compact-decision --entry-id 63 | | | | n/a | |
 | typical | 1000 | 64-entry hit | iograph-compact-idx-decision --entry-idx 63 | | | | n/a | |
+| typical | 1000 | 128-entry hit | iograph-compact-decision --entry-id 127 | | | | n/a | |
+| typical | 1000 | 128-entry hit | iograph-compact-idx-decision --entry-idx 127 | | | | n/a | |
+| typical | 1000 | 256-entry hit | iograph-compact-decision --entry-id 255 | | | | n/a | |
+| typical | 1000 | 256-entry hit | iograph-compact-idx-decision --entry-idx 255 | | | | n/a | |
 | typical | 1000 | POST 300B | iograph-ringbuf-always-post | | | | post | |
 | typical | 1000 | POST 300B | iograph-compact-post-payload | | | | post | |
 | typical | 1000 | POST 800B | iograph-ringbuf-always-post | | | | post | |

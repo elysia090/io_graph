@@ -10,7 +10,7 @@ HDR = struct.Struct("<IHH13I")
 ENTRY = struct.Struct("<II")
 IOG_MAGIC = 0x494F4752
 IOG_VERSION = 1
-MAX_ENTRIES = 64
+MAX_ENTRIES = 256
 
 
 def parse_args():

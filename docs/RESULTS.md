@@ -89,6 +89,10 @@ Same-hook LPM comparison from the compact kernel run:
 | 1000 shared-prefix hit | 165.98 | n/a | 453.31 | 2.73x |
 | 1000 long-path hit | 169.09 | n/a | 768.05 | 4.54x |
 
+The `n/a` full-key LPM cells were intentionally not run for shared-prefix and
+long-path rows because bounded-copy LPM is the fairer key-materialization
+baseline; full-key copying would only add fixed 256 B scratch-copy work.
+
 Selector-acquisition rows now copy bounded selector bytes before lookup. For
 the 1000-prefix typical policy, copying 44 B adds 10.29 ns to compact hit rows
 and 28.20 ns to bounded-copy LPM hit rows.

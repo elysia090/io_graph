@@ -64,6 +64,10 @@ row copies only `selector_len` bytes.
 | 1000 shared-prefix hit | 165.98 | n/a | 453.31 | 2.73x |
 | 1000 long-path hit | 169.09 | n/a | 768.05 | 4.54x |
 
+The full-key LPM rows are `n/a` for shared-prefix and long-path cases because
+bounded-copy LPM is the fairer baseline once selector length is known; the
+full-key variant would only add fixed 256 B scratch-copy work.
+
 For this string/path-prefix action-policy workload, compact io_graph beats the
 same-hook LPM_TRIE rows that include bounded key materialization. This is not a
 claim that io_graph is generally faster than LPM_TRIE for every prefix map use.
@@ -109,7 +113,8 @@ the entry table size. The `entry_id` row searches for the last id; the
 
 The single-entry row intentionally shows no gain because `run_action()` already
 has a single-entry fast path. The 64-entry row shows the intended direct
-entry-selection benefit.
+entry-selection benefit. The kernel cap now allows 256 entries; the 128/256
+entry curve still needs a refreshed booted-kernel run.
 
 ## POST Payload Rows
 
@@ -217,6 +222,8 @@ Representative command shape:
   helpers rather than copying from a preloaded BPF global.
 - Repeated-run variance study with alternating compact/LPM order.
 - Kernel map update latency and memory accounting from `BPF_MAP_UPDATE_ELEM`.
+- PMU-visible provenance fields for external runs: Linux overlay commit, bench
+  binary build ID, and kernel config hash.
 
 ## Historical Byte-Trie Snapshot
 

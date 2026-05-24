@@ -27,6 +27,8 @@ struct iograph_test_result {
 	__u32 kfunc_ret;
 	__u32 final_state;
 	__u32 action_code;
+	__u32 run_action_code;
+	__u32 run_action_idx_code;
 	__u32 ringbuf_reserve_seen;
 };
 

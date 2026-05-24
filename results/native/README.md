@@ -76,8 +76,9 @@ For each kernel run record:
   prefilter demo.
 - `perf_event_open` branch/cache/L1/LLC counters when the host exposes the PMU.
 
-Fold the summarized matrix into `current.md` and `docs/RESULTS.md`. Raw scratch
-logs should not become long-lived result entrypoints.
+Fold the summarized matrix into `current.md` and `docs/RESULTS.md`, then run
+`make check-results` from the repository root to catch stale copied summary
+values. Raw scratch logs should not become long-lived result entrypoints.
 
 References:
 

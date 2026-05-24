@@ -32,6 +32,10 @@ struct {
 extern int bpf_iograph_run(struct bpf_map *map, const __u8 *buf, __u32 len,
 			   __u32 entry,
 			   struct bpf_iograph_run_result *run) __ksym;
+extern __u32 bpf_iograph_run_action(struct bpf_map *map, const __u8 *buf,
+				    __u32 len, __u32 entry) __ksym;
+extern __u32 bpf_iograph_run_action_idx(struct bpf_map *map, const __u8 *buf,
+					__u32 len, __u32 entry_idx) __ksym;
 
 static __u8 test_path[] = IOGRAPH_TEST_PATH;
 
@@ -55,6 +59,12 @@ int BPF_PROG(iograph_run_before_ringbuf, struct pt_regs *regs, long id)
 	result->kfunc_ret = ret;
 	result->final_state = run.final_state;
 	result->action_code = run.action_code;
+	result->run_action_code =
+		bpf_iograph_run_action((struct bpf_map *)&iograph_policy,
+				       test_path, sizeof(test_path) - 1, 0);
+	result->run_action_idx_code =
+		bpf_iograph_run_action_idx((struct bpf_map *)&iograph_policy,
+					   test_path, sizeof(test_path) - 1, 0);
 
 	if (ret || run.action_code == IOGRAPH_TEST_DROP)
 		return 0;
