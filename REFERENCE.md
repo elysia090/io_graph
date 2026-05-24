@@ -32,6 +32,28 @@ mechanically, the docs should preserve this boundary: `PREFIX_POLICY` means
 compact verified prefix-policy graph data and a small pre-emission action
 decision, not arbitrary policy execution in the kernel.
 
+## Main Claim
+
+The external evidence does not show that `BPF_MAP_TYPE_LPM_TRIE` is unable to
+hold six thousand to ten thousand prefixes. That would be the wrong claim.
+LPM_TRIE can hold many prefixes and remains the correct baseline for pure
+longest-prefix lookup.
+
+The stronger and safer claim is different:
+
+- Existing Falco/Tetragon-style selector machinery is not designed to carry
+  thousands of raw string or file-prefix values in BPF program logic.
+- LPM_TRIE can store many prefixes, but raw path/string selectors still need a
+  BPF hot-path `prefixlen+data` key before the program can decide whether to
+  skip event materialization.
+- The current kernel LPM trie has known locality and lifecycle tradeoffs from
+  binary-node traversal and scattered node allocation. Those tradeoffs matter
+  more as prefix sets and update/delete/free paths grow.
+- The missing primitive is therefore not generic prefix lookup. It is
+  high-cardinality raw-byte prefix/action lookup before event materialization.
+
+This is the niche that `BPF_MAP_TYPE_PREFIX_POLICY` should name.
+
 ## 1. Falco libs #1557
 
 Source: [falcosecurity/libs#1557](https://github.com/falcosecurity/libs/issues/1557)
@@ -102,12 +124,21 @@ before event emission. The distinction matters: LPM_TRIE can be excellent for
 plain prefix lookup, but the pipeline still pays for whichever intermediate
 object is required to construct the LPM key or preserve the selector string.
 
+The current Tetragon BPF-side selector machinery also shows why the thousands
+of prefixes case is outside the existing selector shape. In
+`bpf/process/types/basic.h`, ordinary match values are capped at 4, string
+match values are capped at 2, and file/fd match values are capped at 2 or 8
+depending on the large-BPF-program build. The nearby source comment explicitly
+ties string parsing to BPF instruction cost. Tetragon does expose prefix-style
+operators, but the BPF selector value layout is tuned for a handful of
+conditions, not six thousand to ten thousand file/string prefixes.
+
 Design consequences for io_graph:
 
 - Always compare against LPM_TRIE, including bounded-copy key construction.
 - Report direct-buffer traversal separately from any selector acquisition row.
-- Avoid naming the public primitive as a binary-prefix or path-prefix-only map;
-  the useful abstraction is selector bytes to action code.
+- Keep `PREFIX_POLICY` scoped to bounded raw selector bytes to action code, not
+  a general Tetragon selector replacement.
 
 ## 3. Tetragon #4323
 
@@ -246,6 +277,14 @@ predates the later prefix-operator request, but it shows the same evolutionary
 pressure: binary selectors started with exact inclusion/exclusion, then users
 needed larger value sets and richer operators.
 
+The patch is also a useful scale marker. It moves `matchBinaries` toward map
+backing by using a global `names_map` and a per-sensor `sel_names_map`, and it
+raises the global names map to 256 entries for binary names across selectors.
+It also keeps binary path handling in 256-byte pathname buffers. This is a real
+improvement over four inline values, but it is not a thousands-prefix backend
+and it remains exact-name machinery rather than a high-cardinality prefix
+runtime.
+
 That history is a reminder that generated comparisons and ad hoc per-operator
 logic tend to grow. io_graph's representation thesis is that high-cardinality
 selector policy should grow as verified graph data and compact runtime graph
@@ -274,13 +313,22 @@ increase traversal height. It also ties large tries to L1 data-cache and dTLB
 miss behavior because dynamically allocated trie nodes may live at unrelated
 addresses.
 
-For io_graph this is not an argument against LPM_TRIE. LPM remains the correct
-baseline for pure longest-prefix lookup. The article instead justifies the
-current measurement discipline: compare against LPM, include key
-materialization, account for cache/TLB behavior, and avoid claiming that one
-map type is universally faster. io_graph's compact runtime is deliberately
-contiguous, publication-derived graph data for bounded selector action
-decisions; its advantage should be stated only for this workload shape.
+For io_graph this is not an argument that LPM_TRIE cannot handle ten thousand
+prefixes. The same article includes a ten-thousand-entry lookup benchmark at
+134.710 ns/op. The point is that LPM is only the lookup structure. For raw
+path/string pre-emission filtering, the BPF program still has to acquire
+selector bytes and materialize a `prefixlen+data` key before lookup. And as the
+prefix set grows, LPM's pointer-heavy binary-node shape, cache/TLB behavior,
+and update/delete/free paths become part of the operational cost. Cloudflare
+documents production-scale bottlenecks at much larger entry counts, including
+very slow lookups and long map-free times.
+
+The current measurement discipline follows from that nuance: compare against
+LPM, include full-key and bounded-copy key materialization, account for
+cache/TLB behavior, and avoid claiming that one map type is universally faster.
+io_graph's compact runtime is deliberately contiguous, publication-derived
+graph data for bounded selector action decisions; its advantage should be
+stated only for this workload shape.
 
 Design consequences for io_graph:
 
@@ -299,6 +347,14 @@ DeepWiki's Cilium map overview is a secondary source, but it is useful context
 for how BPF systems are organized in practice. It describes BPF maps as central
 state shared between userspace and BPF programs, notes map registry and pinned
 map replacement patterns, and summarizes dynamic map sizing and allocation.
+
+It also shows where LPM is already a good fit. Cilium's IPCache uses an LPM
+trie for IP identities and CIDR-style matching, while policy maps handle
+structured network-policy keys such as source identity, destination port, and
+protocol. That is a different workload from raw path/cmdline/argv prefix
+classification before event materialization. The Cilium precedent supports
+"map-backed policy/state is normal"; it does not make LPM a complete answer
+for raw string selector action policy.
 
 io_graph fits that ecosystem better as a map-backed, RCU-published policy
 object than as generated BPF code. The loader uploads verified graph data; map
@@ -323,12 +379,17 @@ The external trail is consistent:
 - Falco maintainers warn that kernel-side work must remain cheap and bounded.
 - Tetragon users ask for prefix/postfix and reusable selectors, but existing
   designs often require carrying selector strings or materializing lookup keys.
-- LPM_TRIE is the right baseline for pure prefix lookup, but it has its own key
-  materialization and traversal costs that must be measured fairly.
+- Tetragon's current BPF selector machinery is sized for small string/file
+  value counts, and the `matchBinaries` map improvement is a 256-name
+  exact-match structure, not a thousands-prefix backend.
+- LPM_TRIE is the right baseline for pure prefix lookup and can store many
+  prefixes, but raw string/path pre-emission filtering still pays key
+  materialization and inherits LPM's locality/update/delete/free tradeoffs.
 - Large BPF systems already manage policy/state through map-backed objects, so
   a verified graph-data object with RCU replacement is a natural shape.
 
-That history supports the current io_graph direction: verified source blob,
-publication-time compact action graph, direct bounded selector traversal,
-small action code, DROP-before-reserve, and no claim to be a regex engine,
-Falco/Tetragon rule engine, path canonicalizer, or security boundary.
+That history supports the current `BPF_MAP_TYPE_PREFIX_POLICY` direction:
+verified source blob, publication-time compact action graph, direct bounded
+selector traversal, small action code, DROP-before-reserve, and no claim to be
+a regex engine, Falco/Tetragon rule engine, path canonicalizer, or security
+boundary.
