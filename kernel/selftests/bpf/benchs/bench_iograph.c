@@ -38,6 +38,7 @@ static struct iograph_args {
 	const char *selector;
 	u32 drop_action;
 	u32 payload_size;
+	u32 probe_len;
 } args = {
 	.selector = IOGRAPH_DEFAULT_SELECTOR,
 	.drop_action = 1,
@@ -50,6 +51,7 @@ enum {
 	ARG_SELECTOR,
 	ARG_DROP_ACTION,
 	ARG_PAYLOAD_SIZE,
+	ARG_PROBE_LEN,
 };
 
 static const struct argp_option opts[] = {
@@ -59,6 +61,8 @@ static const struct argp_option opts[] = {
 	{ "drop-action", ARG_DROP_ACTION, "CODE", 0, "DROP action code" },
 	{ "payload-size", ARG_PAYLOAD_SIZE, "BYTES", 0,
 	  "Payload bytes copied by POST payload rows" },
+	{ "probe-len", ARG_PROBE_LEN, "BYTES", 0,
+	  "Selector bytes copied by acquisition rows; 0 means selector length" },
 	{},
 };
 
@@ -93,6 +97,12 @@ static error_t iograph_parse_arg(int key, char *arg, struct argp_state *state)
 		if (!end || *end || !iograph_payload_size_ok(code))
 			argp_usage(state);
 		args.payload_size = code;
+		break;
+	case ARG_PROBE_LEN:
+		code = strtoul(arg, &end, 0);
+		if (!end || *end || code > IOGRAPH_BENCH_SELECTOR_CAP)
+			argp_usage(state);
+		args.probe_len = code;
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -290,7 +300,10 @@ static void iograph_fill_payload(void)
 }
 
 static void iograph_setup_common(bool use_lpm, bool decision_only,
-				 bool lpm_bounded_copy, bool payload_post)
+				 bool lpm_bounded_copy, bool payload_post,
+				 bool acquire_selector,
+				 bool discard_after_reserve,
+				 bool entry_idx)
 {
 	size_t selector_len = strlen(args.selector);
 	struct bpf_program *prog;
@@ -315,6 +328,7 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 	}
 
 	ctx.skel->rodata->selector_len = selector_len;
+	ctx.skel->rodata->probe_len = args.probe_len;
 	ctx.skel->rodata->drop_action = args.drop_action;
 	ctx.skel->rodata->payload_len = args.payload_size;
 	memcpy(ctx.skel->bss->selector, args.selector, selector_len);
@@ -326,7 +340,9 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 
 	if (use_lpm) {
 		update_lpm_policy();
-		if (lpm_bounded_copy) {
+		if (acquire_selector) {
+			prog = ctx.skel->progs.iograph_lpm_bounded_acquire_decision_bench_run;
+		} else if (lpm_bounded_copy) {
 			prog = decision_only ?
 				ctx.skel->progs.iograph_lpm_bounded_decision_bench_run :
 				ctx.skel->progs.iograph_lpm_bounded_bench_run;
@@ -340,7 +356,13 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 					  &key, ctx.blob, BPF_ANY);
 		if (err)
 			die_errno("update iograph policy", errno);
-		prog = payload_post ?
+		prog = acquire_selector ?
+			ctx.skel->progs.iograph_acquire_decision_bench_run :
+			entry_idx ?
+			ctx.skel->progs.iograph_idx_decision_bench_run :
+			discard_after_reserve ?
+			ctx.skel->progs.iograph_discard_after_reserve_bench_run :
+			payload_post ?
 			ctx.skel->progs.iograph_payload_bench_run :
 			decision_only ?
 			ctx.skel->progs.iograph_decision_bench_run :
@@ -367,37 +389,57 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 
 static void iograph_setup(void)
 {
-	iograph_setup_common(false, false, false, false);
+	iograph_setup_common(false, false, false, false, false, false, false);
 }
 
 static void iograph_lpm_setup(void)
 {
-	iograph_setup_common(true, false, false, false);
+	iograph_setup_common(true, false, false, false, false, false, false);
 }
 
 static void iograph_lpm_bounded_setup(void)
 {
-	iograph_setup_common(true, false, true, false);
+	iograph_setup_common(true, false, true, false, false, false, false);
 }
 
 static void iograph_decision_setup(void)
 {
-	iograph_setup_common(false, true, false, false);
+	iograph_setup_common(false, true, false, false, false, false, false);
+}
+
+static void iograph_idx_decision_setup(void)
+{
+	iograph_setup_common(false, true, false, false, false, false, true);
 }
 
 static void iograph_lpm_decision_setup(void)
 {
-	iograph_setup_common(true, true, false, false);
+	iograph_setup_common(true, true, false, false, false, false, false);
 }
 
 static void iograph_lpm_bounded_decision_setup(void)
 {
-	iograph_setup_common(true, true, true, false);
+	iograph_setup_common(true, true, true, false, false, false, false);
 }
 
 static void iograph_payload_setup(void)
 {
-	iograph_setup_common(false, false, false, true);
+	iograph_setup_common(false, false, false, true, false, false, false);
+}
+
+static void iograph_acquire_decision_setup(void)
+{
+	iograph_setup_common(false, true, false, false, true, false, false);
+}
+
+static void iograph_lpm_bounded_acquire_decision_setup(void)
+{
+	iograph_setup_common(true, true, true, false, true, false, false);
+}
+
+static void iograph_discard_after_reserve_setup(void)
+{
+	iograph_setup_common(false, false, false, false, false, true, false);
 }
 
 static void iograph_always_post_setup(void)
@@ -413,6 +455,7 @@ static void iograph_always_post_setup(void)
 	}
 
 	ctx.skel->rodata->selector_len = selector_len;
+	ctx.skel->rodata->probe_len = args.probe_len;
 	ctx.skel->rodata->drop_action = args.drop_action;
 	ctx.skel->rodata->payload_len = args.payload_size;
 	memcpy(ctx.skel->bss->selector, args.selector, selector_len);
@@ -594,6 +637,40 @@ const struct bench bench_iograph_compact_decision = {
 	.report_final = hits_drops_report_final,
 };
 
+const struct bench bench_iograph_compact_idx_decision = {
+	.name = "iograph-compact-idx-decision",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_decision_validate,
+	.setup = iograph_idx_decision_setup,
+	.producer_thread = iograph_producer,
+	.measure = iograph_decision_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_acquire_decision = {
+	.name = "iograph-compact-acquire-decision",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_decision_validate,
+	.setup = iograph_acquire_decision_setup,
+	.producer_thread = iograph_producer,
+	.measure = iograph_decision_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_discard_after_reserve = {
+	.name = "iograph-discard-after-reserve",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_validate,
+	.setup = iograph_discard_after_reserve_setup,
+	.producer_thread = iograph_producer,
+	.consumer_thread = iograph_consumer,
+	.measure = iograph_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
 const struct bench bench_iograph_hook_floor = {
 	.name = "iograph-hook-floor",
 	.argp = &bench_iograph_argp,
@@ -621,6 +698,17 @@ const struct bench bench_iograph_lpm_bounded_decision = {
 	.argp = &bench_iograph_argp,
 	.validate = iograph_lpm_decision_validate,
 	.setup = iograph_lpm_bounded_decision_setup,
+	.producer_thread = iograph_producer,
+	.measure = iograph_decision_measure,
+	.report_progress = hits_drops_report_progress,
+	.report_final = hits_drops_report_final,
+};
+
+const struct bench bench_iograph_lpm_bounded_acquire_decision = {
+	.name = "iograph-lpm-bounded-acquire-decision",
+	.argp = &bench_iograph_argp,
+	.validate = iograph_lpm_decision_validate,
+	.setup = iograph_lpm_bounded_acquire_decision_setup,
 	.producer_thread = iograph_producer,
 	.measure = iograph_decision_measure,
 	.report_progress = hits_drops_report_progress,

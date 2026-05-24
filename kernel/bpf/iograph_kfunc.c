@@ -91,7 +91,7 @@ iograph_entry_state(const struct bpf_iograph_graph *graph, u32 entry_id,
 		return 0;
 	}
 
-	for (i = 0; i < graph->hdr->entry_cnt; i++) {
+	for (i = 0; i < graph->entry_cnt; i++) {
 		if (graph->entries[i].id == entry_id) {
 			*state = graph->entries[i].state;
 			return 0;
@@ -143,7 +143,7 @@ iograph_compact_entry_state(const struct bpf_iograph_graph *graph,
 		return 0;
 	}
 
-	for (i = 0; i < graph->hdr->entry_cnt; i++) {
+	for (i = 0; i < graph->compact_entry_cnt; i++) {
 		if (graph->compact_entries[i].id == entry_id) {
 			*state = graph->compact_entries[i].state;
 			return 0;
@@ -151,6 +151,17 @@ iograph_compact_entry_state(const struct bpf_iograph_graph *graph,
 	}
 
 	return -ENOENT;
+}
+
+static __always_inline int
+iograph_compact_entry_idx_state(const struct bpf_iograph_graph *graph,
+				u32 entry_idx, u32 *state)
+{
+	if (entry_idx >= graph->compact_entry_cnt)
+		return -ENOENT;
+
+	*state = graph->compact_entries[entry_idx].state;
+	return 0;
 }
 
 static __always_inline const struct bpf_iograph_cedge *
@@ -163,6 +174,14 @@ iograph_cnode_find_edge(const struct bpf_iograph_graph *graph,
 
 	if (!node->edge_cnt)
 		return NULL;
+
+	if (node->dispatch_start) {
+		u16 edge_off = graph->compact_dispatch[node->dispatch_start - 1 +
+						       sym];
+
+		return edge_off == U16_MAX ?
+		       NULL : &graph->compact_edges[node->edge_start + edge_off];
+	}
 
 	edges = &graph->compact_edges[node->edge_start];
 	if (likely(node->edge_cnt == 1)) {
@@ -244,6 +263,35 @@ static u32 iograph_walk_action_compact(const struct bpf_iograph_graph *graph,
 	return action;
 }
 
+static __always_inline u32
+iograph_run_action_state(struct bpf_map *map, const u8 *buf, u32 len,
+			 bool by_idx, u32 entry)
+{
+	struct bpf_iograph_map *imap;
+	struct bpf_iograph_graph *graph;
+	u32 state, action = 0;
+
+	if (!map || map->map_type != BPF_MAP_TYPE_IOGRAPH || (!buf && len))
+		return 0;
+
+	imap = container_of(map, struct bpf_iograph_map, map);
+	rcu_read_lock();
+	graph = iograph_active_graph(imap);
+	if (!graph || len > graph->max_input_len)
+		goto out;
+	if (by_idx) {
+		if (iograph_compact_entry_idx_state(graph, entry, &state))
+			goto out;
+	} else if (iograph_compact_entry_state(graph, entry, &state)) {
+		goto out;
+	}
+
+	action = iograph_walk_action_compact(graph, buf, len, state);
+out:
+	rcu_read_unlock();
+	return action;
+}
+
 __bpf_kfunc int bpf_iograph_run(struct bpf_map *map, const u8 *buf,
 				u32 buf__sz, u32 entry_id,
 				struct bpf_iograph_run_result *result__uninit)
@@ -263,7 +311,7 @@ __bpf_kfunc int bpf_iograph_run(struct bpf_map *map, const u8 *buf,
 	imap = container_of(map, struct bpf_iograph_map, map);
 	rcu_read_lock();
 	graph = iograph_active_graph(imap);
-	if (!graph)
+	if (!graph || !graph->hdr)
 		goto out;
 	if (len > graph->max_input_len) {
 		ret = -E2BIG;
@@ -285,25 +333,13 @@ out:
 __bpf_kfunc u32 bpf_iograph_run_action(struct bpf_map *map, const u8 *buf,
 				       u32 buf__sz, u32 entry_id)
 {
-	struct bpf_iograph_map *imap;
-	struct bpf_iograph_graph *graph;
-	u32 len = buf__sz;
-	u32 state, action = 0;
+	return iograph_run_action_state(map, buf, buf__sz, false, entry_id);
+}
 
-	if (!map || map->map_type != BPF_MAP_TYPE_IOGRAPH || (!buf && len))
-		return 0;
-
-	imap = container_of(map, struct bpf_iograph_map, map);
-	rcu_read_lock();
-	graph = iograph_active_graph(imap);
-	if (!graph || len > graph->max_input_len ||
-	    iograph_compact_entry_state(graph, entry_id, &state))
-		goto out;
-
-	action = iograph_walk_action_compact(graph, buf, len, state);
-out:
-	rcu_read_unlock();
-	return action;
+__bpf_kfunc u32 bpf_iograph_run_action_idx(struct bpf_map *map, const u8 *buf,
+					   u32 buf__sz, u32 entry_idx)
+{
+	return iograph_run_action_state(map, buf, buf__sz, true, entry_idx);
 }
 
 __bpf_kfunc u32 bpf_iograph_step(struct bpf_map *map, u32 state, u32 sym)
@@ -318,7 +354,7 @@ __bpf_kfunc u32 bpf_iograph_step(struct bpf_map *map, u32 state, u32 sym)
 	imap = container_of(map, struct bpf_iograph_map, map);
 	rcu_read_lock();
 	graph = iograph_active_graph(imap);
-	if (!graph || state >= graph->hdr->node_cnt)
+	if (!graph || !graph->hdr || state >= graph->node_cnt)
 		goto out;
 
 	next = iograph_step_state(graph, state, (u8)sym);
@@ -331,6 +367,7 @@ BTF_KFUNCS_START(iograph_kfunc_ids)
 BTF_ID_FLAGS(func, bpf_iograph_step)
 BTF_ID_FLAGS(func, bpf_iograph_run)
 BTF_ID_FLAGS(func, bpf_iograph_run_action)
+BTF_ID_FLAGS(func, bpf_iograph_run_action_idx)
 BTF_KFUNCS_END(iograph_kfunc_ids)
 
 static const struct btf_kfunc_id_set iograph_kfunc_set = {

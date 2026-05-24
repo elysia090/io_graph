@@ -9,6 +9,7 @@
 #define IOG_NO_STATE		(~0U)
 #define IOG_NODE_F_FINAL_ACTION	(1u << 0)
 #define IOG_NODE_FLAG_MASK	IOG_NODE_F_FINAL_ACTION
+#define BPF_F_IOGRAPH_ACTION_ONLY (1u << 31)
 
 struct iog_blob_hdr {
 	__u32 magic;

@@ -47,6 +47,7 @@ struct {
 } events SEC(".maps");
 
 const volatile __u32 selector_len;
+const volatile __u32 probe_len;
 const volatile __u32 drop_action = 1;
 const volatile __u32 payload_len;
 __u8 selector[IOGRAPH_BENCH_SELECTOR_CAP];
@@ -57,6 +58,8 @@ long reserve_fails;
 
 extern __u32 bpf_iograph_run_action(struct bpf_map *map, const __u8 *buf,
 				    __u32 len, __u32 entry) __ksym;
+extern __u32 bpf_iograph_run_action_idx(struct bpf_map *map, const __u8 *buf,
+					__u32 len, __u32 entry_idx) __ksym;
 
 #define IOGRAPH_EMIT_PAYLOAD_CONST(_len) do {				\
 	event = bpf_ringbuf_reserve(&events, sizeof(*event) + (_len), 0); \
@@ -106,6 +109,31 @@ static __always_inline int iograph_emit_payload_action(__u32 action)
 	if (len == 800)
 		IOGRAPH_EMIT_PAYLOAD_CONST(800);
 	IOGRAPH_EMIT_PAYLOAD_CONST(2048);
+}
+
+static __always_inline __u32 iograph_effective_probe_len(__u32 len)
+{
+	__u32 cap = probe_len;
+
+	if (cap && len > cap)
+		len = cap;
+	return len;
+}
+
+static __always_inline __u32 iograph_copy_selector(__u8 *dst, __u32 len)
+{
+	volatile __u8 *vdst = dst;
+	const volatile __u8 *vsrc = selector;
+	int i;
+
+	len = iograph_effective_probe_len(len);
+#pragma unroll
+	for (i = 0; i < IOGRAPH_BENCH_SELECTOR_CAP; i++) {
+		if ((__u32)i >= len)
+			break;
+		vdst[i] = vsrc[i];
+	}
+	return len;
 }
 
 SEC("raw_tp/sys_enter")
@@ -168,6 +196,64 @@ int iograph_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 	return action != 0;
 }
 
+SEC("raw_tp/sys_enter")
+int iograph_idx_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u32 len = selector_len;
+	__u32 action;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	action = bpf_iograph_run_action_idx((struct bpf_map *)&policy,
+					    selector, len, 0);
+	return action != 0;
+}
+
+SEC("raw_tp/sys_enter")
+int iograph_acquire_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u8 buf[IOGRAPH_BENCH_SELECTOR_CAP];
+	__u32 len = selector_len;
+	__u32 action;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	len = iograph_copy_selector(buf, len);
+	action = bpf_iograph_run_action((struct bpf_map *)&policy, buf,
+					len, 0);
+	return action != 0;
+}
+
+SEC("raw_tp/sys_enter")
+int iograph_discard_after_reserve_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	struct iograph_bench_event *event;
+	__u32 len = selector_len;
+	__u32 action;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	action = bpf_iograph_run_action((struct bpf_map *)&policy, selector,
+					len, 0);
+	if (action == drop_action) {
+		event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
+		if (!event) {
+			__sync_fetch_and_add(&reserve_fails, 1);
+			return 0;
+		}
+		bpf_ringbuf_discard(event, 0);
+		return 0;
+	}
+
+	return iograph_emit_action(action);
+}
+
 static __always_inline __u32 iograph_lpm_action(__u32 len)
 {
 	struct iograph_lpm_key *key;
@@ -183,9 +269,12 @@ static __always_inline __u32 iograph_lpm_action(__u32 len)
 	return action ? *action : 0;
 }
 
-static __always_inline __u32 iograph_lpm_bounded_action(__u32 len)
+static __always_inline __u32
+iograph_lpm_bounded_action_from(const __u8 *src, __u32 len)
 {
 	struct iograph_lpm_key *key;
+	const volatile __u8 *vsrc = src;
+	volatile __u8 *vdst;
 	__u32 zero = 0;
 	__u32 *action;
 	int i;
@@ -194,14 +283,20 @@ static __always_inline __u32 iograph_lpm_bounded_action(__u32 len)
 	if (!key)
 		return 0;
 	key->prefixlen = len * 8u;
+	vdst = key->data;
 #pragma unroll
 	for (i = 0; i < IOGRAPH_BENCH_SELECTOR_CAP; i++) {
 		if ((__u32)i >= len)
 			break;
-		key->data[i] = selector[i];
+		vdst[i] = vsrc[i];
 	}
 	action = bpf_map_lookup_elem(&lpm_policy, key);
 	return action ? *action : 0;
+}
+
+static __always_inline __u32 iograph_lpm_bounded_action(__u32 len)
+{
+	return iograph_lpm_bounded_action_from(selector, len);
 }
 
 SEC("raw_tp/sys_enter")
@@ -250,6 +345,20 @@ int iograph_lpm_bounded_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	return iograph_lpm_bounded_action(len) != 0;
+}
+
+SEC("raw_tp/sys_enter")
+int iograph_lpm_bounded_acquire_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
+{
+	__u8 buf[IOGRAPH_BENCH_SELECTOR_CAP];
+	__u32 len = selector_len;
+
+	(void)ctx;
+	if (len > sizeof(selector))
+		return 0;
+
+	len = iograph_copy_selector(buf, len);
+	return iograph_lpm_bounded_action_from(buf, len) != 0;
 }
 
 char LICENSE[] SEC("license") = "GPL";

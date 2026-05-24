@@ -93,6 +93,7 @@ microbenchmark:
 | `bpf event path` | userspace BPF-shaped model | prebuilt selector samples | compact `run_action()` first; POST copies 300 B, 800 B, or 2 KiB |
 | `iograph-hook-floor` | `raw_tp/sys_enter`, triggered by `getpgid` | none | no graph lookup, batched host trigger counter |
 | `iograph-decision` / `iograph-compact-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only; both names use the current compact `run_action()` path after publication |
+| `iograph-compact-idx-decision` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | action only through `run_action_idx()`; direct entry-index selection for loader-known entries |
 | `iograph-prefilter` / `iograph-compact-prefilter` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | DROP-before-reserve path; both names use the current compact runtime, and the compact name is the explicit current row |
 | `iograph-compact-post-payload` | `raw_tp/sys_enter`, triggered by `getpgid` | preloaded writable BPF global | compact decision first; POST reserves and copies `--payload-size` bytes, while DROP remains 0 B |
 | `iograph-ringbuf-always-post` | `raw_tp/sys_enter`, triggered by `getpgid` | no policy lookup | baseline that always reserves and copies the same fixed-size payload |
@@ -200,6 +201,9 @@ The compact runtime stores only literal tail bytes after the first dispatch
 byte and can turn terminal final-action leaves into final-action edges. That
 avoids re-comparing the dispatch byte and removes non-entry terminal leaf
 nodes from the action-only compact graph.
+High-fanout compact nodes may also carry a derived byte dispatch table. The
+current threshold is fanout >= 16, so ordinary low-fanout prefix datasets keep
+the smaller single-edge, short linear, and binary-search dispatch shapes.
 
 `io_graph_accept_inline_first_final_action` returns at the first non-zero
 action. That path is only the right semantics when the caller knows the

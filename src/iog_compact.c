@@ -15,6 +15,8 @@ u64 iog_cgraph_mem_bytes(const struct iog_cgraph *cg)
 	       (u64)cg->entry_cnt * sizeof(*cg->entries) +
 	       (u64)cg->node_cnt * sizeof(*cg->nodes) +
 	       (u64)cg->edge_cnt * sizeof(*cg->edges) +
+	       (u64)cg->dispatch_cnt * IOG_DISPATCH256_SIZE *
+		       sizeof(*cg->dispatch) +
 	       cg->lit_len;
 }
 
@@ -38,14 +40,22 @@ static int cgraph_entry_state(const struct iog_cgraph *cg, u32 entry_id,
 	return -ENOENT;
 }
 
-static const struct iog_cedge *cnode_find_edge(const struct iog_cedge *all_edges,
+static const struct iog_cedge *cnode_find_edge(const struct iog_cgraph *cg,
 					       const struct iog_cnode *node,
 					       u8 sym)
 {
-	const struct iog_cedge *edges = &all_edges[node->edge_start];
+	const struct iog_cedge *edges;
 	u32 lo = 0, hi = node->edge_cnt;
 	u32 i;
 
+	if (node->dispatch_start) {
+		u16 edge_off = cg->dispatch[node->dispatch_start - 1 + sym];
+
+		return edge_off == UINT16_MAX ?
+		       NULL : &cg->edges[node->edge_start + edge_off];
+	}
+
+	edges = &cg->edges[node->edge_start];
 	if (likely(node->edge_cnt == 1)) {
 		const struct iog_cedge *edge = edges;
 
@@ -162,33 +172,38 @@ static u32 assign_compact_nodes(const struct iog_graph *graph, const bool *keep,
 	return nr;
 }
 
-static u32 chain_len_to_kept(const struct iog_graph *graph, const bool *keep,
-			     u32 dst)
-{
-	u32 nr = 1;
+struct chain_meta {
+	u32 endpoint;
+	u32 len;
+};
 
-	while (!keep[dst] && !final_action_leaf(graph, dst)) {
-		const struct iog_node *node = &graph->nodes[dst];
+static int chain_meta_get(const struct iog_graph *graph, const bool *keep,
+			  struct chain_meta *meta, u32 dst, u32 *len,
+			  u32 *endpoint)
+{
+	u32 state = dst, nr = 1;
+
+	if (meta[dst].len) {
+		*len = meta[dst].len;
+		*endpoint = meta[dst].endpoint;
+		return 0;
+	}
+
+	while (!keep[state] && !final_action_leaf(graph, state)) {
+		const struct iog_node *node = &graph->nodes[state];
 		const struct iog_edge *edge = &graph->edges[node->edge_start];
 
-		dst = edge->dst;
+		if (nr > graph->hdr->node_cnt)
+			return -EINVAL;
+		state = edge->dst;
 		nr++;
 	}
 
-	return nr;
-}
-
-static u32 chain_endpoint(const struct iog_graph *graph, const bool *keep,
-			  u32 dst)
-{
-	while (!keep[dst] && !final_action_leaf(graph, dst)) {
-		const struct iog_node *node = &graph->nodes[dst];
-		const struct iog_edge *edge = &graph->edges[node->edge_start];
-
-		dst = edge->dst;
-	}
-
-	return dst;
+	meta[dst].len = nr;
+	meta[dst].endpoint = state;
+	*len = nr;
+	*endpoint = state;
+	return 0;
 }
 
 static void copy_chain_literal_tail(const struct iog_graph *graph,
@@ -208,10 +223,11 @@ static void copy_chain_literal_tail(const struct iog_graph *graph,
 }
 
 static int count_compact_storage(const struct iog_graph *graph,
-				 const bool *keep, u32 *edge_cnt,
-				 u32 *lit_len)
+				 const bool *keep, struct chain_meta *meta,
+				 u32 *edge_cnt,
+				 u32 *lit_len, u32 *dispatch_cnt)
 {
-	u32 i, edges = 0, lits = 0;
+	u32 i, edges = 0, lits = 0, dispatch = 0;
 
 	for (i = 0; i < graph->hdr->node_cnt; i++) {
 		const struct iog_node *node = &graph->nodes[i];
@@ -219,16 +235,27 @@ static int count_compact_storage(const struct iog_graph *graph,
 
 		if (!keep[i])
 			continue;
+		if (node->edge_cnt >= IOG_DISPATCH256_THRESHOLD) {
+			if (dispatch == UINT32_MAX)
+				return -E2BIG;
+			dispatch++;
+		}
 
 		for (j = 0; j < node->edge_cnt; j++) {
 			const struct iog_edge *edge =
 				&graph->edges[node->edge_start + j];
 			u32 clen = 1;
+			u32 endpoint;
+			int ret;
 
 			edges++;
-			if (byte_edge(edge))
-				clen = chain_len_to_kept(graph, keep,
-							 edge->dst);
+			if (byte_edge(edge)) {
+				ret = chain_meta_get(graph, keep, meta,
+						     edge->dst, &clen,
+						     &endpoint);
+				if (ret)
+					return ret;
+			}
 			if (clen > 1) {
 				u32 tail_len = clen - 1;
 
@@ -241,13 +268,22 @@ static int count_compact_storage(const struct iog_graph *graph,
 
 	*edge_cnt = edges;
 	*lit_len = lits;
+	*dispatch_cnt = dispatch;
 	return 0;
 }
 
 static int alloc_cgraph(const struct iog_graph *graph, u32 node_cnt,
-			u32 edge_cnt, u32 lit_len, struct iog_cgraph **out)
+			u32 edge_cnt, u32 lit_len, u32 dispatch_cnt,
+			struct iog_cgraph **out)
 {
 	struct iog_cgraph *cg;
+	size_t dispatch_slots, dispatch_bytes;
+
+	if (iog_mul_overflow_size(dispatch_cnt, IOG_DISPATCH256_SIZE,
+				  &dispatch_slots) ||
+	    iog_mul_overflow_size(dispatch_slots, sizeof(*cg->dispatch),
+				  &dispatch_bytes))
+		return -E2BIG;
 
 	cg = calloc(1, sizeof(*cg));
 	if (!cg)
@@ -258,8 +294,10 @@ static int alloc_cgraph(const struct iog_graph *graph, u32 node_cnt,
 				     sizeof(*cg->entries));
 	cg->nodes = calloc(node_cnt, sizeof(*cg->nodes));
 	cg->edges = calloc(edge_cnt ? edge_cnt : 1, sizeof(*cg->edges));
+	cg->dispatch = dispatch_slots ? malloc(dispatch_bytes) : NULL;
 	cg->lits = lit_len ? malloc(lit_len) : NULL;
 	if ((graph->hdr->entry_cnt && !cg->entries) || !cg->nodes || !cg->edges ||
+	    (dispatch_slots && !cg->dispatch) ||
 	    (lit_len && !cg->lits)) {
 		iog_cgraph_free(cg);
 		return -ENOMEM;
@@ -269,6 +307,7 @@ static int alloc_cgraph(const struct iog_graph *graph, u32 node_cnt,
 	cg->node_cnt = node_cnt;
 	cg->edge_cnt = edge_cnt;
 	cg->lit_len = lit_len;
+	cg->dispatch_cnt = dispatch_cnt;
 	cg->max_input_len = graph->max_input_len;
 	if (graph->hdr->entry_cnt)
 		memcpy(cg->entries, graph->entries,
@@ -278,11 +317,31 @@ static int alloc_cgraph(const struct iog_graph *graph, u32 node_cnt,
 	return 0;
 }
 
+static void build_dispatch_table(struct iog_cgraph *cg,
+				 const struct iog_cnode *cnode)
+{
+	u16 *dispatch = &cg->dispatch[cnode->dispatch_start - 1];
+	u32 i;
+
+	for (i = 0; i < IOG_DISPATCH256_SIZE; i++)
+		dispatch[i] = UINT16_MAX;
+
+	for (i = 0; i < cnode->edge_cnt; i++) {
+		const struct iog_cedge *edge =
+			&cg->edges[cnode->edge_start + i];
+		u32 sym;
+
+		for (sym = edge->sym_lo; sym <= edge->sym_hi; sym++)
+			dispatch[sym] = (u16)i;
+	}
+}
+
 static int build_cgraph_edges(const struct iog_graph *graph, const bool *keep,
 			      const u32 *orig_to_compact,
+			      struct chain_meta *meta,
 			      struct iog_cgraph *cg)
 {
-	u32 i, edge_pos = 0, lit_pos = 0;
+	u32 i, edge_pos = 0, lit_pos = 0, dispatch_pos = 0;
 
 	for (i = 0; i < graph->hdr->entry_cnt; i++)
 		cg->entries[i].state = orig_to_compact[cg->entries[i].state];
@@ -304,6 +363,10 @@ static int build_cgraph_edges(const struct iog_graph *graph, const bool *keep,
 		cnode->default_dst = node->default_dst == IOG_NO_STATE ?
 				     IOG_NO_STATE :
 				     orig_to_compact[node->default_dst];
+		if (node->edge_cnt >= IOG_DISPATCH256_THRESHOLD) {
+			cnode->dispatch_start = dispatch_pos + 1;
+			dispatch_pos += IOG_DISPATCH256_SIZE;
+		}
 
 		for (j = 0; j < node->edge_cnt; j++) {
 			const struct iog_edge *edge =
@@ -311,14 +374,16 @@ static int build_cgraph_edges(const struct iog_graph *graph, const bool *keep,
 			struct iog_cedge *cedge = &cg->edges[edge_pos++];
 			u32 clen = 1;
 			u32 endpoint = edge->dst;
+			int ret;
 
 			cedge->sym_lo = (u8)edge->sym_lo;
 			cedge->sym_hi = (u8)edge->sym_hi;
 			if (byte_edge(edge)) {
-				clen = chain_len_to_kept(graph, keep,
-							 edge->dst);
-				endpoint = chain_endpoint(graph, keep,
-							  edge->dst);
+				ret = chain_meta_get(graph, keep, meta,
+						     edge->dst, &clen,
+						     &endpoint);
+				if (ret)
+					return ret;
 			}
 			if (final_action_leaf(graph, endpoint)) {
 				cedge->flags |= IOG_CEDGE_FINAL_ACTION;
@@ -337,6 +402,8 @@ static int build_cgraph_edges(const struct iog_graph *graph, const bool *keep,
 				lit_pos += tail_len;
 			}
 		}
+		if (cnode->dispatch_start)
+			build_dispatch_table(cg, cnode);
 	}
 
 	if (graph->hdr->entry_cnt == 1) {
@@ -354,7 +421,8 @@ int iog_cgraph_new(const struct iog_graph *graph, struct iog_cgraph **out)
 	bool *keep = NULL;
 	u32 *incoming = NULL;
 	u32 *orig_to_compact = NULL;
-	u32 node_cnt, edge_cnt = 0, lit_len = 0;
+	struct chain_meta *meta = NULL;
+	u32 node_cnt, edge_cnt = 0, lit_len = 0, dispatch_cnt = 0;
 	int ret;
 
 	if (!graph || !graph->hdr || !out)
@@ -365,7 +433,8 @@ int iog_cgraph_new(const struct iog_graph *graph, struct iog_cgraph **out)
 	incoming = calloc(graph->hdr->node_cnt, sizeof(*incoming));
 	orig_to_compact = malloc((size_t)graph->hdr->node_cnt *
 				 sizeof(*orig_to_compact));
-	if (!keep || !incoming || !orig_to_compact) {
+	meta = calloc(graph->hdr->node_cnt, sizeof(*meta));
+	if (!keep || !incoming || !orig_to_compact || !meta) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -375,15 +444,17 @@ int iog_cgraph_new(const struct iog_graph *graph, struct iog_cgraph **out)
 		goto out;
 
 	node_cnt = assign_compact_nodes(graph, keep, orig_to_compact);
-	ret = count_compact_storage(graph, keep, &edge_cnt, &lit_len);
+	ret = count_compact_storage(graph, keep, meta, &edge_cnt, &lit_len,
+				    &dispatch_cnt);
 	if (ret)
 		goto out;
 
-	ret = alloc_cgraph(graph, node_cnt, edge_cnt, lit_len, &cg);
+	ret = alloc_cgraph(graph, node_cnt, edge_cnt, lit_len, dispatch_cnt,
+			   &cg);
 	if (ret)
 		goto out;
 
-	ret = build_cgraph_edges(graph, keep, orig_to_compact, cg);
+	ret = build_cgraph_edges(graph, keep, orig_to_compact, meta, cg);
 	if (ret)
 		goto out;
 
@@ -392,6 +463,7 @@ int iog_cgraph_new(const struct iog_graph *graph, struct iog_cgraph **out)
 
 out:
 	iog_cgraph_free(cg);
+	free(meta);
 	free(orig_to_compact);
 	free(incoming);
 	free(keep);
@@ -406,6 +478,7 @@ void iog_cgraph_free(struct iog_cgraph *cg)
 	free(cg->entries);
 	free(cg->nodes);
 	free(cg->edges);
+	free(cg->dispatch);
 	free(cg->lits);
 	free(cg);
 }
@@ -428,7 +501,56 @@ u32 iog_cgraph_run_action_entry(const struct iog_cgraph *cg, const u8 *buf,
 
 	while (i < len) {
 		const struct iog_cedge *edge =
-			cnode_find_edge(cg->edges, node, buf[i]);
+			cnode_find_edge(cg, node, buf[i]);
+
+		if (!edge) {
+			if (node->default_dst == IOG_NO_STATE)
+				break;
+			node = &cg->nodes[node->default_dst];
+			i++;
+		} else {
+			i++;
+			if (edge->flags & IOG_CEDGE_LITERAL) {
+				if (len - i < edge->lit_len ||
+				    memcmp(buf + i, cg->lits + edge->lit_off,
+					   edge->lit_len))
+					break;
+				i += edge->lit_len;
+			}
+			if (edge->flags & IOG_CEDGE_FINAL_ACTION)
+				return edge->dst;
+			node = &cg->nodes[edge->dst];
+		}
+
+		if (node->action_code) {
+			action = node->action_code;
+			if (node->flags & IOG_NODE_F_FINAL_ACTION)
+				return action;
+		}
+	}
+
+	return action;
+}
+
+u32 iog_cgraph_run_action_idx(const struct iog_cgraph *cg, const u8 *buf,
+			      u32 len, u32 entry_idx)
+{
+	const struct iog_cnode *node;
+	u32 state, action, i = 0;
+
+	if (!cg || (!buf && len) || len > cg->max_input_len ||
+	    entry_idx >= cg->entry_cnt)
+		return 0;
+
+	state = cg->entries[entry_idx].state;
+	node = &cg->nodes[state];
+	action = node->action_code;
+	if (action && (node->flags & IOG_NODE_F_FINAL_ACTION))
+		return action;
+
+	while (i < len) {
+		const struct iog_cedge *edge =
+			cnode_find_edge(cg, node, buf[i]);
 
 		if (!edge) {
 			if (node->default_dst == IOG_NO_STATE)
@@ -479,7 +601,7 @@ u32 iog_cgraph_count_transitions_entry(const struct iog_cgraph *cg,
 	node = &cg->nodes[state];
 	while (i < len) {
 		const struct iog_cedge *edge =
-			cnode_find_edge(cg->edges, node, buf[i]);
+			cnode_find_edge(cg, node, buf[i]);
 
 		if (!edge) {
 			if (node->default_dst == IOG_NO_STATE)
@@ -530,6 +652,7 @@ int iog_cgraph_stats(const struct iog_cgraph *cg,
 	stats->nodes = cg->node_cnt;
 	stats->edges = cg->edge_cnt;
 	stats->literal_bytes = cg->lit_len;
+	stats->dispatch_tables = cg->dispatch_cnt;
 	stats->mem_bytes = iog_cgraph_mem_bytes(cg);
 
 	for (i = 0; i < cg->edge_cnt; i++) {

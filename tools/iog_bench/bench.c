@@ -1663,15 +1663,16 @@ int main(int argc, char **argv)
 		       layout.binary_fanout_nodes, layout.max_fanout);
 
 		printf("\ncompact runtime graph\n");
-		printf("| prefixes | compact_nodes | compact_edges | literal_edges | literal_bytes | mean_literal_len | max_literal_len | max_fanout | max_compact_depth | compact_runtime_B |\n");
-		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
-		printf("| %zu | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %.2f | %" PRIu32 " | %" PRIu32 " | ",
+		printf("| prefixes | compact_nodes | compact_edges | literal_edges | literal_bytes | mean_literal_len | max_literal_len | max_fanout | dispatch_tables | max_compact_depth | compact_runtime_B |\n");
+		printf("|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+		printf("| %zu | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | %.2f | %" PRIu32 " | %" PRIu32 " | %" PRIu32 " | ",
 		       counts[ci], compact_stats.nodes, compact_stats.edges,
 		       compact_stats.literal_edges, compact_stats.literal_bytes,
 		       compact_stats.literal_edges ?
 		       (double)compact_stats.literal_bytes /
 		       (double)compact_stats.literal_edges : 0.0,
-		       compact_stats.max_literal_len, compact_stats.max_fanout);
+		       compact_stats.max_literal_len, compact_stats.max_fanout,
+		       compact_stats.dispatch_tables);
 		if (compact_stats.depth_complete)
 			printf("%" PRIu32, compact_stats.max_depth);
 		else

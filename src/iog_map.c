@@ -310,6 +310,21 @@ u32 iog_bpf_kfunc_run_action(const struct iog_bpf_map *map, const u8 *buf,
 	return iog_cgraph_run_action_entry(obj->compact, buf, len, entry_id);
 }
 
+u32 iog_bpf_kfunc_run_action_idx(const struct iog_bpf_map *map,
+				 const u8 *buf, u32 len, u32 entry_idx)
+{
+	const struct iog_graph_obj *obj;
+
+	if (!map)
+		return 0;
+
+	obj = map->map.graph;
+	if (!obj)
+		return 0;
+
+	return iog_cgraph_run_action_idx(obj->compact, buf, len, entry_idx);
+}
+
 int iog_bpf_kfunc_run(const struct iog_bpf_map *map, const u8 *buf, u32 len,
 		      u32 entry_id, struct iog_run_result *result)
 {

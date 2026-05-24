@@ -82,13 +82,13 @@ This table reflects literal tail-only storage, final-action edge returns, and
 terminal final-action leaf pruning. The verified byte-trie blob is unchanged;
 only the publication-time compact runtime object changes.
 
-| dataset | prefixes | iog_blob_B | compact_runtime_B | compact_nodes | compact_edges | literal_edges | literal_tail_B | mean_tail_len | max_tail_len | blob/compact |
-|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| typical | 100 | 44,592 | 4,735 | 51 | 150 | 137 | 1,439 | 10.50 | 16 | 9.42 |
-| typical | 1000 | 346,264 | 39,177 | 379 | 1,378 | 1,329 | 10,985 | 8.27 | 16 | 8.84 |
-| typical | 10000 | 869,472 | 164,799 | 1,835 | 6,954 | 6,757 | 24,095 | 3.57 | 16 | 5.28 |
-| shared-prefix | 1000 | 201,756 | 25,739 | 112 | 1,111 | 1,001 | 6,091 | 6.08 | 91 | 7.84 |
-| long-path | 1000 | 64,472 | 20,836 | 112 | 1,111 | 1,001 | 1,188 | 1.19 | 188 | 3.09 |
+| dataset | prefixes | iog_blob_B | compact_runtime_B | compact_nodes | compact_edges | literal_edges | dispatch_tables | literal_tail_B | mean_tail_len | max_tail_len | blob/compact |
+|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| typical | 100 | 44,592 | 4,947 | 51 | 150 | 137 | 0 | 1,439 | 10.50 | 16 | 9.01 |
+| typical | 1000 | 346,264 | 40,701 | 379 | 1,378 | 1,329 | 0 | 10,985 | 8.27 | 16 | 8.51 |
+| typical | 10000 | 869,472 | 172,147 | 1,835 | 6,954 | 6,757 | 0 | 24,095 | 3.57 | 16 | 5.05 |
+| shared-prefix | 1000 | 201,756 | 26,195 | 112 | 1,111 | 1,001 | 0 | 6,091 | 6.08 | 91 | 7.70 |
+| long-path | 1000 | 64,472 | 21,292 | 112 | 1,111 | 1,001 | 0 | 1,188 | 1.19 | 188 | 3.03 |
 
 ### Compact Decision Cost
 
@@ -132,11 +132,11 @@ source blob bytes
 
 | dataset | prefixes | active_blob_B | active_compact_B | active_total_B | action_only_mem_B |
 |:---|---:|---:|---:|---:|---:|
-| typical | 100 | 44,592 | 4,735 | 49,463 | 4,887 |
-| typical | 1000 | 346,264 | 39,177 | 385,577 | 39,329 |
-| typical | 10000 | 869,472 | 164,799 | 1,034,407 | not run |
-| shared-prefix | 1000 | 201,756 | 25,739 | 227,631 | 25,891 |
-| long-path | 1000 | 64,472 | 20,836 | 85,444 | 20,988 |
+| typical | 100 | 44,592 | 4,947 | 49,675 | 5,099 |
+| typical | 1000 | 346,264 | 40,701 | 387,101 | 40,853 |
+| typical | 10000 | 869,472 | 172,147 | 1,041,755 | 172,299 |
+| shared-prefix | 1000 | 201,756 | 26,195 | 228,087 | 26,347 |
+| long-path | 1000 | 64,472 | 21,292 | 85,900 | 21,444 |
 
 ## Verifier And Layout
 
@@ -168,11 +168,11 @@ activation latency. Peak estimates include update scratch and the new object;
 
 | dataset | prefixes | verify_us | compact_build_us | map_update_us | active_total_B | update_scratch_B | peak_new_update_B |
 |:---|---:|---:|---:|---:|---:|---:|---:|
-| typical | 100 | 6.14 | 25.15 | 61.87 | 49,463 | 14,310 | 63,773 |
-| typical | 1000 | 41.34 | 177.19 | 339.05 | 385,577 | 111,276 | 496,853 |
-| typical | 10000 | 102.79 | 359.72 | 575.68 | 1,034,407 | not run | not run |
-| shared-prefix | 1000 | 21.42 | 87.80 | 245.24 | 227,631 | 64,827 | 292,458 |
-| long-path | 1000 | 7.41 | 36.23 | 76.25 | 85,444 | 20,700 | 106,144 |
+| typical | 100 | 6.14 | 25.15 | 61.87 | 49,675 | 14,310 | 63,985 |
+| typical | 1000 | 41.34 | 177.19 | 339.05 | 387,101 | 111,276 | 498,377 |
+| typical | 10000 | 102.79 | 359.72 | 575.68 | 1,041,755 | 279,450 | 1,321,205 |
+| shared-prefix | 1000 | 21.42 | 87.80 | 245.24 | 228,087 | 64,827 | 292,914 |
+| long-path | 1000 | 7.41 | 36.23 | 76.25 | 85,900 | 20,700 | 106,600 |
 
 ## BPF Map Ops
 
@@ -193,10 +193,11 @@ inspection return no graph.
 
 | dataset | prefixes | retained_mem_B | action_only_mem_B | run_action | diagnostic_run |
 |:---|---:|---:|---:|---:|:---|
-| typical | 100 | 49,463 | 4,887 | ok | no graph |
-| typical | 1000 | 385,577 | 39,329 | ok | no graph |
-| shared-prefix | 1000 | 227,631 | 25,891 | ok | no graph |
-| long-path | 1000 | 85,444 | 20,988 | ok | no graph |
+| typical | 100 | 49,675 | 5,099 | ok | no graph |
+| typical | 1000 | 387,101 | 40,853 | ok | no graph |
+| typical | 10000 | 1,041,755 | 172,299 | ok | no graph |
+| shared-prefix | 1000 | 228,087 | 26,347 | ok | no graph |
+| long-path | 1000 | 85,900 | 21,444 | ok | no graph |
 
 ## Materialization Plus Decode
 
