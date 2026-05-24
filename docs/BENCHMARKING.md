@@ -122,6 +122,19 @@ pre-emission decision itself. `iograph-hook-floor` keeps the same syscall,
 attach, and empty BPF dispatch path so decision rows can be read against the
 fixed hook floor.
 
+The comprehensive kernel matrix can be rerun with:
+
+```sh
+sh scripts/run_kernel_bench_matrix.sh \
+  /path/to/linux/tools/testing/selftests/bpf/bench \
+  /tmp/iograph-fullbench \
+  /tmp/iograph-fullbench/matrix-full
+```
+
+The artifact directory must contain generated prefix text files, compiled
+`.iog` blobs, and `.meta.json` files for the stems documented by the script.
+The runner records per-row logs and a `matrix.tsv` summary.
+
 ## Workload dimensions
 
 The default run covers:
