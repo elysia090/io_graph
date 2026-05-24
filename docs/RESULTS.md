@@ -25,13 +25,14 @@ the publication-time compact runtime graph:
 
 | prefixes | selftests bench case | operations_M/s | throughput_ns/op | ringbuf on reject |
 |---:|:---|---:|---:|:---|
-| floor | empty same-hook raw tracepoint BPF row | 8.618 +/- 0.185 | 116.04 | n/a |
-| 100 | compact matched decision | 6.086 +/- 0.050 | 164.31 | n/a |
-| 1000 | compact early-miss decision | 7.683 +/- 0.127 | 130.16 | n/a |
-| 1000 | compact matched decision | 5.695 +/- 0.131 | 175.59 | n/a |
-| 1000 | compact matched DROP | 5.772 +/- 0.028 | 173.25 | 0 B |
-| 1000 | shared-prefix compact matched decision | 5.725 +/- 0.060 | 174.67 | n/a |
-| 1000 | long-path compact matched decision | 5.724 +/- 0.074 | 174.70 | n/a |
+| floor | empty same-hook raw tracepoint BPF row | 8.785 +/- 0.069 | 113.83 | n/a |
+| 100 | compact matched decision | 6.141 +/- 0.097 | 162.84 | n/a |
+| 1000 | compact early-miss decision | 7.564 +/- 0.047 | 132.21 | n/a |
+| 1000 | compact matched decision | 5.739 +/- 0.071 | 174.25 | n/a |
+| 1000 | compact indexed matched decision | 5.689 +/- 0.060 | 175.78 | n/a |
+| 1000 | compact matched DROP | 5.787 +/- 0.054 | 172.80 | 0 B |
+| 1000 | shared-prefix compact matched decision | 6.025 +/- 0.045 | 165.98 | n/a |
+| 1000 | long-path compact matched decision | 5.914 +/- 0.050 | 169.09 | n/a |
 
 These rows include syscall trigger, tracepoint dispatch, BPF program execution,
 and graph rows include the map/kfunc walk. The same-hook floor shows why an
@@ -57,7 +58,9 @@ the dispatch threshold, so no dispatch tables are allocated in those rows; the
 compact node metadata still raises typical 1000-prefix compact runtime memory
 to 40,701 B and typical 10000-prefix compact runtime memory to 172,147 B. The
 kernel table above is the latest booted-kernel measurement from the patched WSL
-kernel; the indexed row still needs a booted-kernel refresh.
+kernel, including the indexed kfunc row. The single-entry indexed row is only a
+load-path validation because `run_action()` already has a single-entry fast
+path; the multi-entry row below shows the intended benefit.
 
 IO-aware pre-emission accounting is now folded into the userspace current
 snapshot. It records `max_probe_len`, selector-copy-plus-decision rows,
@@ -80,25 +83,48 @@ Same-hook LPM comparison from the compact kernel run:
 
 | case | compact ns/op | LPM full-key ns/op | LPM bounded-copy ns/op | compact vs bounded |
 |:---|---:|---:|---:|---:|
-| 100 typical hit | 164.31 | 212.18 | 184.95 | 1.13x |
-| 1000 typical hit | 175.59 | 250.69 | 212.40 | 1.21x |
-| 1000 typical prefilter DROP | 173.25 | 254.65 | 209.29 | 1.21x |
-| 1000 shared-prefix hit | 174.67 | 319.69 | 304.14 | 1.74x |
-| 1000 long-path hit | 174.70 | 516.00 | 505.31 | 2.89x |
+| 100 typical hit | 162.84 | 232.83 | 203.29 | 1.25x |
+| 1000 typical hit | 174.25 | 292.74 | 246.37 | 1.41x |
+| 1000 typical prefilter DROP | 172.80 | 293.86 | 245.28 | 1.42x |
+| 1000 shared-prefix hit | 165.98 | n/a | 453.31 | 2.73x |
+| 1000 long-path hit | 169.09 | n/a | 768.05 | 4.54x |
+
+The `n/a` full-key LPM cells were intentionally not run for shared-prefix and
+long-path rows because bounded-copy LPM is the fairer key-materialization
+baseline; full-key copying would only add fixed 256 B scratch-copy work.
+
+Selector-acquisition rows now copy bounded selector bytes before lookup. For
+the 1000-prefix typical policy, copying 44 B adds 10.29 ns to compact hit rows
+and 28.20 ns to bounded-copy LPM hit rows.
+
+Reserve/discard is also measured in the same kernel bench path:
+
+| order | ns/op | reserved ringbuf bytes | emitted ringbuf bytes |
+|:---|---:|---:|---:|
+| DROP-before-reserve | 172.80 | 0 B | 0 B |
+| discard-after-reserve | 191.13 | 8 B | 0 B |
+
+Multi-entry entry selection:
+
+| entries | entry_id ns/op | entry_idx ns/op | saved_ns |
+|---:|---:|---:|---:|
+| 1 | 174.25 | 175.78 | -1.53 |
+| 16 | 178.92 | 176.12 | 2.80 |
+| 64 | 204.92 | 176.68 | 28.24 |
 
 POST payload rows from the same patched kernel with one producer and one
 ringbuf consumer:
 
 | payload_B | compact POST ns/op | always POST ns/op |
 |---:|---:|---:|
-| 300 | 462.11 | 387.45 |
-| 800 | 603.14 | 553.40 |
-| 2048 | 1013.17 | 976.56 |
+| 300 | 468.16 | 408.16 |
+| 800 | 647.67 | 610.87 |
+| 2048 | 1112.35 | 1066.10 |
 
 Weighted with the 1000-prefix compact DROP row, the same kernel producer path
-breaks even at 25.8% DROP for 300 B records, 11.6% DROP for 800 B records, and
-4.4% DROP for 2048 B records. At 95% DROP the producer-side averages are
-187.69 ns/op, 194.74 ns/op, and 215.25 ns/op respectively, while emitted
+breaks even at 20.3% DROP for 300 B records, 7.7% DROP for 800 B records, and
+4.9% DROP for 2048 B records. At 95% DROP the producer-side averages are
+187.57 ns/op, 196.54 ns/op, and 219.78 ns/op respectively, while emitted
 ringbuf bytes fall by 20x.
 
 Required kernel matrix:
@@ -111,9 +137,9 @@ Required kernel matrix:
 - BPF verifier load time and BPF JIT time for baselines;
 - update latency without BPF program reload;
 - ringbuf bytes emitted and reserve/drop counts for the prefilter demo;
-- selector-acquisition rows from `iograph-compact-acquire-decision` and
-  `iograph-lpm-bounded-acquire-decision`;
-- reserve/discard comparison from `iograph-discard-after-reserve`;
+- real hook acquisition rows that use path/cmdline/argv acquisition helpers
+  rather than a bounded copy from a preloaded BPF global;
+- repeated-run variance with alternating compact/LPM order;
 - `perf stat` or `perf_event_open` branch/cache counters when the native PMU
   exposes them.
 

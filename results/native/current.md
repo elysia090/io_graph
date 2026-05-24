@@ -1,8 +1,9 @@
 # Native Kernel Current State
 
-This file records the latest kernel-backed measurement rows. It is the stable
-native result entrypoint; date-stamped run notes are folded here instead of kept
-as parallel sources of truth.
+This file is the stable kernel-backed result entrypoint. Here, "native" means
+the Linux kernel overlay and BPF selftests path rather than the userspace proof;
+the current rows were measured on a patched WSL2 kernel, not on a PMU-visible
+bare-metal host.
 
 ## Measurement Shape
 
@@ -17,9 +18,11 @@ as parallel sources of truth.
 - Benchmark path: Linux `tools/testing/selftests/bpf` `bench`, attached at
   `raw_tp/sys_enter` and triggered by repeated `getpgid` syscalls.
 - Policy input: compiled `iog_blob` artifacts from `iogc`.
-- Selector input: preloaded writable BPF global. Path acquisition and path
-  string generation are excluded from these rows.
-- Payload generation: excluded. DROP rows return before ringbuf reservation.
+- Selector input: preloaded writable BPF global unless the row says
+  `acquire+decision`.
+- Path generation and path canonicalization: excluded.
+- DROP payload generation: excluded; DROP-before-reserve rows return before
+  `bpf_ringbuf_reserve()`.
 - POST payload rows: included separately with one producer and one ringbuf
   consumer, covering 300 B, 800 B, and 2048 B payload copies.
 - PMU: WSL did not expose a CPU PMU device, so branch/cache/L1/LLC counters are
@@ -27,67 +30,91 @@ as parallel sources of truth.
 
 The throughput-derived `ns/op` rows include syscall trigger, raw tracepoint
 dispatch, BPF program execution, and graph rows include map/kfunc work. They
-are not a pure in-kernel kfunc microbenchmark.
-
-## Compact Runtime Rows
+are not pure in-kernel kfunc microbenchmarks.
 
 `iograph-hook-floor` keeps the same attach type and syscall trigger but returns
 from an empty BPF program. `floor_delta_ns` subtracts that empty-hook row.
 
+## Compact And LPM Rows
+
 | case | operations_M/s | throughput_ns/op | floor_delta_ns |
 |:---|---:|---:|---:|
-| empty same-hook BPF row | 8.618 +/- 0.185 | 116.04 | 0.00 |
-| 100 typical compact hit | 6.086 +/- 0.050 | 164.31 | 48.27 |
-| 1000 typical compact early miss | 7.683 +/- 0.127 | 130.16 | 14.12 |
-| 1000 typical compact hit | 5.695 +/- 0.131 | 175.59 | 59.55 |
-| 1000 typical compact prefilter DROP | 5.772 +/- 0.028 | 173.25 | 57.21 |
-| 1000 shared-prefix compact hit | 5.725 +/- 0.060 | 174.67 | 58.63 |
-| 1000 long-path compact hit | 5.724 +/- 0.074 | 174.70 | 58.66 |
+| empty same-hook BPF row | 8.785 +/- 0.069 | 113.83 | 0.00 |
+| 100 typical compact hit | 6.141 +/- 0.097 | 162.84 | 49.01 |
+| 1000 typical compact early miss | 7.564 +/- 0.047 | 132.21 | 18.37 |
+| 1000 typical compact hit | 5.739 +/- 0.071 | 174.25 | 60.42 |
+| 1000 typical compact indexed hit | 5.689 +/- 0.060 | 175.78 | 61.95 |
+| 1000 typical compact prefilter DROP | 5.787 +/- 0.054 | 172.80 | 58.97 |
+| 1000 shared-prefix compact hit | 6.025 +/- 0.045 | 165.98 | 52.14 |
+| 1000 long-path compact hit | 5.914 +/- 0.050 | 169.09 | 55.26 |
 
 The previous byte-trie kernel snapshot had matched decisions around
 352-356 ns/op. The compact runtime brings matched decisions down to
-164-176 ns/op on the same raw-tracepoint measurement shape.
+163-176 ns/op on the same raw-tracepoint measurement shape.
 
-### Minimal Reboot Refresh
-
-The patched 6.18 WSL kernel was rebuilt and booted again so the BTF visible to
-the BPF loader includes `bpf_iograph_run_action_idx()`. The table below is a
-minimal same-hook refresh for the 1000-prefix typical policy. It intentionally
-does not replace the broader matrix above because the 100-prefix,
-shared-prefix, long-path, and POST-payload rows were not rerun in this pass.
-
-| case | operations_M/s | throughput_ns/op | floor_delta_ns |
-|:---|---:|---:|---:|
-| empty same-hook BPF row | 8.757 +/- 0.020 | 114.19 | 0.00 |
-| 1000 typical compact hit | 5.953 +/- 0.017 | 167.98 | 53.79 |
-| 1000 typical compact indexed hit | 5.830 +/- 0.078 | 171.53 | 57.34 |
-| 1000 typical compact prefilter DROP | 5.789 +/- 0.160 | 172.74 | 58.55 |
-| 1000 typical LPM bounded-copy hit | 4.209 +/- 0.009 | 237.59 | 123.40 |
-| 1000 typical LPM bounded-copy prefilter DROP | 4.204 +/- 0.028 | 237.87 | 123.68 |
-
-The indexed row validates the new kfunc load and execution path. This policy has
-one entry, so the normal `run_action()` path already uses the single-entry fast
-path; a multi-entry policy is needed to show the intended entry-lookup benefit.
-In this minimal refresh, compact `io_graph` remains faster than bounded-copy LPM
-by 1.41x on the hit row and 1.38x on the DROP row.
-
-## Same-Bench LPM Trie
-
-`iograph-lpm-decision` runs the same selector and attach/trigger path through
-`BPF_MAP_TYPE_LPM_TRIE`. LPM needs a `prefixlen,data` lookup key, so the full-key
-row copies the full 256 B selector cap before the LPM helper call. The
-bounded-copy row copies only `selector_len` bytes.
+`BPF_MAP_TYPE_LPM_TRIE` is the same-hook prefix baseline. The full-key row
+copies the full 256 B selector cap into the LPM scratch key. The bounded-copy
+row copies only `selector_len` bytes.
 
 | case | compact ns/op | LPM full-key ns/op | LPM bounded-copy ns/op | compact vs bounded |
 |:---|---:|---:|---:|---:|
-| 100 typical hit | 164.31 | 212.18 | 184.95 | 1.13x |
-| 1000 typical hit | 175.59 | 250.69 | 212.40 | 1.21x |
-| 1000 typical prefilter DROP | 173.25 | 254.65 | 209.29 | 1.21x |
-| 1000 shared-prefix hit | 174.67 | 319.69 | 304.14 | 1.74x |
-| 1000 long-path hit | 174.70 | 516.00 | 505.31 | 2.89x |
+| 100 typical hit | 162.84 | 232.83 | 203.29 | 1.25x |
+| 1000 typical hit | 174.25 | 292.74 | 246.37 | 1.41x |
+| 1000 typical prefilter DROP | 172.80 | 293.86 | 245.28 | 1.42x |
+| 1000 shared-prefix hit | 165.98 | n/a | 453.31 | 2.73x |
+| 1000 long-path hit | 169.09 | n/a | 768.05 | 4.54x |
 
-Bounded-copy LPM materially improves the short-selector rows, but compact
-`io_graph` still beats the same-hook LPM baseline for this prefix workload.
+The full-key LPM rows are `n/a` for shared-prefix and long-path cases because
+bounded-copy LPM is the fairer baseline once selector length is known; the
+full-key variant would only add fixed 256 B scratch-copy work.
+
+For this string/path-prefix action-policy workload, compact io_graph beats the
+same-hook LPM_TRIE rows that include bounded key materialization. This is not a
+claim that io_graph is generally faster than LPM_TRIE for every prefix map use.
+
+## Selector Acquisition Rows
+
+These rows copy bounded selector bytes into a stack buffer before lookup. For
+the 1000-prefix typical policy, `max_probe_len` is 44 B.
+
+| case | direct ns/op | acquire+decision ns/op | acquisition_delta_ns |
+|:---|---:|---:|---:|
+| compact 1000 early miss | 132.21 | 139.72 | 7.51 |
+| compact 1000 hit | 174.25 | 184.54 | 10.29 |
+| LPM bounded 1000 early miss | 129.55 | 139.96 | 10.41 |
+| LPM bounded 1000 hit | 246.37 | 274.57 | 28.20 |
+
+The acquisition rows still use a preloaded BPF global as the source. They model
+bounded selector copy cost, not real path lookup, canonicalization, or argv
+walking.
+
+## Drop Order Rows
+
+| case | operations_M/s | throughput_ns/op | floor_delta_ns | reserved ringbuf bytes | emitted ringbuf bytes |
+|:---|---:|---:|---:|---:|---:|
+| DROP-before-reserve | 5.787 +/- 0.054 | 172.80 | 58.97 | 0 B | 0 B |
+| discard-after-reserve | 5.232 +/- 0.047 | 191.13 | 77.30 | 8 B | 0 B |
+
+The discard row reserves only the small benchmark event header and immediately
+discards it. It isolates the reserve/discard ordering cost; payload-copy POST
+cost is measured separately below.
+
+## Multi-Entry Indexed Rows
+
+The multi-entry blobs reuse the same entry state for each entry and vary only
+the entry table size. The `entry_id` row searches for the last id; the
+`entry_idx` row directly indexes the same table slot.
+
+| entries | entry_id ns/op | entry_idx ns/op | saved_ns | speedup |
+|---:|---:|---:|---:|---:|
+| 1 | 174.25 | 175.78 | -1.53 | 0.99x |
+| 16 | 178.92 | 176.12 | 2.80 | 1.02x |
+| 64 | 204.92 | 176.68 | 28.24 | 1.16x |
+
+The single-entry row intentionally shows no gain because `run_action()` already
+has a single-entry fast path. The 64-entry row shows the intended direct
+entry-selection benefit. The kernel cap now allows 256 entries; the 128/256
+entry curve still needs a refreshed booted-kernel run.
 
 ## POST Payload Rows
 
@@ -96,40 +123,50 @@ They show the cost paid for POST events; DROP rows above return before reserve.
 
 | payload_B | ringbuf_record_B | compact POST M/s | compact POST ns/op | always POST M/s | always POST ns/op |
 |---:|---:|---:|---:|---:|---:|
-| 300 | 344 | 2.164 +/- 0.070 | 462.11 | 2.581 +/- 0.107 | 387.45 |
-| 800 | 840 | 1.658 +/- 0.017 | 603.14 | 1.807 +/- 0.018 | 553.40 |
-| 2048 | 2088 | 0.987 +/- 0.013 | 1013.17 | 1.024 +/- 0.030 | 976.56 |
+| 300 | 344 | 2.136 +/- 0.008 | 468.16 | 2.450 +/- 0.011 | 408.16 |
+| 800 | 840 | 1.544 +/- 0.010 | 647.67 | 1.637 +/- 0.009 | 610.87 |
+| 2048 | 2088 | 0.899 +/- 0.004 | 1112.35 | 0.938 +/- 0.004 | 1066.10 |
 
 Weighted producer-side cost uses the 1000-prefix compact DROP row
-(173.25 ns/op) and the compact POST payload rows above. Ringbuf emission is
+(172.80 ns/op) and the compact POST payload rows above. Ringbuf emission is
 only on the POST fraction.
 
 | drop_pct | payload_B | compact prefilter avg ns/op | always POST ns/op | speedup | emitted ringbuf_B/op | ringbuf reduction |
 |---:|---:|---:|---:|---:|---:|---:|
-| 50 | 300 | 317.68 | 387.45 | 1.22x | 172.00 | 2.00x |
-| 50 | 800 | 388.19 | 553.40 | 1.43x | 420.00 | 2.00x |
-| 50 | 2048 | 593.21 | 976.56 | 1.65x | 1044.00 | 2.00x |
-| 80 | 300 | 231.02 | 387.45 | 1.68x | 68.80 | 5.00x |
-| 80 | 800 | 259.23 | 553.40 | 2.13x | 168.00 | 5.00x |
-| 80 | 2048 | 341.23 | 976.56 | 2.86x | 417.60 | 5.00x |
-| 90 | 300 | 202.14 | 387.45 | 1.92x | 34.40 | 10.00x |
-| 90 | 800 | 216.24 | 553.40 | 2.56x | 84.00 | 10.00x |
-| 90 | 2048 | 257.24 | 976.56 | 3.80x | 208.80 | 10.00x |
-| 95 | 300 | 187.69 | 387.45 | 2.06x | 17.20 | 20.00x |
-| 95 | 800 | 194.74 | 553.40 | 2.84x | 42.00 | 20.00x |
-| 95 | 2048 | 215.25 | 976.56 | 4.54x | 104.40 | 20.00x |
-| 99 | 300 | 176.14 | 387.45 | 2.20x | 3.44 | 100.00x |
-| 99 | 800 | 177.55 | 553.40 | 3.12x | 8.40 | 100.00x |
-| 99 | 2048 | 181.65 | 976.56 | 5.38x | 20.88 | 100.00x |
+| 50 | 300 | 320.48 | 408.16 | 1.27x | 172.00 | 2.00x |
+| 50 | 800 | 410.23 | 610.87 | 1.49x | 420.00 | 2.00x |
+| 50 | 2048 | 642.57 | 1066.10 | 1.66x | 1044.00 | 2.00x |
+| 80 | 300 | 231.87 | 408.16 | 1.76x | 68.80 | 5.00x |
+| 80 | 800 | 267.77 | 610.87 | 2.28x | 168.00 | 5.00x |
+| 80 | 2048 | 360.71 | 1066.10 | 2.96x | 417.60 | 5.00x |
+| 90 | 300 | 202.34 | 408.16 | 2.02x | 34.40 | 10.00x |
+| 90 | 800 | 220.29 | 610.87 | 2.77x | 84.00 | 10.00x |
+| 90 | 2048 | 266.76 | 1066.10 | 4.00x | 208.80 | 10.00x |
+| 95 | 300 | 187.57 | 408.16 | 2.18x | 17.20 | 20.00x |
+| 95 | 800 | 196.54 | 610.87 | 3.11x | 42.00 | 20.00x |
+| 95 | 2048 | 219.78 | 1066.10 | 4.85x | 104.40 | 20.00x |
+| 99 | 300 | 175.75 | 408.16 | 2.32x | 3.44 | 100.00x |
+| 99 | 800 | 177.55 | 610.87 | 3.44x | 8.40 | 100.00x |
+| 99 | 2048 | 182.20 | 1066.10 | 5.85x | 20.88 | 100.00x |
 
 Break-even DROP rate is low because POST rows pay normal reserve/copy work
 while DROP rows return before reserve:
 
 | payload_B | break-even DROP rate |
 |---:|---:|
-| 300 | 25.8% |
-| 800 | 11.6% |
-| 2048 | 4.4% |
+| 300 | 20.3% |
+| 800 | 7.7% |
+| 2048 | 4.9% |
+
+The weighted average is:
+
+```text
+avg_prefilter =
+  drop_fraction * compact_drop_ns +
+  post_fraction * compact_post_ns
+```
+
+Break-even is when `avg_prefilter < always_post_ns`.
 
 ## Validation Notes
 
@@ -137,33 +174,56 @@ while DROP rows return before reserve:
   `scripts/build_linux_overlay_minimal.sh` builds `kernel/bpf/iograph_map.o`
   and `kernel/bpf/iograph_kfunc.o` through the patched Linux build system
   without a full kernel rebuild.
-- A refreshed selftests bench run requires booting a patched 6.18 WSL kernel.
-  The old boot artifact could load the compact rows, but lacked the indexed
-  action kfunc in kernel BTF, so the boot `bzImage` was relinked and replaced.
+- The running kernel already exposed the current map type and kfuncs. This run
+  rebuilt only the Linux selftests `bench` binary after adding bench rodata for
+  `entry_id` and `entry_idx`.
 - The selftests bench object build uses explicit volatile byte-copy loops in
   the BPF program so bounded selector copies are not lowered into unsupported
   BPF `memcpy` calls by the compiler.
 - `bench iograph-hook-floor` loaded the same skeleton and attached the empty
   raw tracepoint BPF floor row.
-- `bench iograph-compact-decision` and `bench iograph-compact-prefilter`
-  loaded `BPF_MAP_TYPE_IOGRAPH`, updated it with compiled graph blobs, and ran
-  100/1000-prefix typical policies plus 1000-prefix shared/long-path policies.
-- `bench iograph-lpm-decision` and `bench iograph-lpm-prefilter` loaded the
-  corresponding prefix text files into an LPM trie baseline on the same raw
-  tracepoint path.
-- `bench iograph-lpm-bounded-decision` and
-  `bench iograph-lpm-bounded-prefilter` measured selector-length-only LPM key
-  materialization.
+- `bench iograph-compact-decision`, `bench iograph-compact-idx-decision`, and
+  `bench iograph-compact-prefilter` loaded `BPF_MAP_TYPE_IOGRAPH`, updated it
+  with compiled graph blobs, and ran 100/1000-prefix typical policies plus
+  1000-prefix shared/long-path policies.
+- `bench iograph-lpm-decision`, `bench iograph-lpm-prefilter`,
+  `bench iograph-lpm-bounded-decision`, and
+  `bench iograph-lpm-bounded-prefilter` measured same-hook LPM baselines.
+- `bench iograph-compact-acquire-decision` and
+  `bench iograph-lpm-bounded-acquire-decision` measured bounded selector copy
+  before the decision.
+- `bench iograph-discard-after-reserve` measured reserve/discard after a DROP
+  decision.
 - `bench iograph-compact-post-payload` and `bench iograph-ringbuf-always-post`
   measured POST-side payload materialization with a ringbuf consumer.
-- `bench iograph-compact-acquire-decision`,
-  `bench iograph-lpm-bounded-acquire-decision`, and
-  `bench iograph-discard-after-reserve` are now in the bench source for the
-  next kernel run; the table above does not include those unrefreshed rows yet.
 - The compact prefilter DROP row returned before `bpf_ringbuf_reserve()`, so
   rejected events contributed 0 ringbuf bytes in this bench path.
 - The WSL environment exposes no CPU PMU device. Branch/cache/L1/LLC
-  `perf_event_open` rows remain native-host work.
+  `perf_event_open` rows remain PMU-visible host work.
+
+Representative command shape:
+
+```sh
+./bench -w 1 -d 5 iograph-hook-floor --selector /x/miss/early-00/not-matched
+./bench -w 1 -d 5 iograph-compact-decision --blob policy.iog --selector "$hit"
+./bench -w 1 -d 5 iograph-compact-prefilter --blob policy.iog --selector "$hit" --drop-action 1
+./bench -w 1 -d 5 iograph-lpm-bounded-decision --prefixes prefixes.txt --selector "$hit"
+./bench -w 1 -d 5 iograph-compact-acquire-decision --blob policy.iog --selector "$hit" --probe-len 44
+./bench -w 1 -d 5 iograph-discard-after-reserve --blob policy.iog --selector "$hit" --drop-action 1
+./bench -w 1 -d 5 -c 1 iograph-compact-post-payload --blob policy.iog --selector "$hit" --drop-action 2 --payload-size 800
+./bench -w 1 -d 5 iograph-compact-idx-decision --blob policy_entries64.iog --selector "$hit" --entry-idx 63
+```
+
+## Remaining Evidence
+
+- PMU-visible host or VM counters: cycles, instructions, branch misses, L1D
+  misses, LLC misses, and i-cache misses where available.
+- Real hook acquisition rows that use actual path/cmdline/argv acquisition
+  helpers rather than copying from a preloaded BPF global.
+- Repeated-run variance study with alternating compact/LPM order.
+- Kernel map update latency and memory accounting from `BPF_MAP_UPDATE_ELEM`.
+- PMU-visible provenance fields for external runs: Linux overlay commit, bench
+  binary build ID, and kernel config hash.
 
 ## Historical Byte-Trie Snapshot
 

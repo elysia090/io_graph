@@ -1,5 +1,9 @@
 # Native Kernel Results
 
+In this directory, "native" means kernel-backed Linux overlay measurements, not
+the userspace proof. The current rows are WSL2 patched-kernel rows unless
+`current.md` explicitly says a PMU-visible native host was used.
+
 Do not paste userspace benchmark numbers here as kernel measurements.
 
 Keep `current.md` honest about the latest overlay/build validation even when
@@ -72,8 +76,9 @@ For each kernel run record:
   prefilter demo.
 - `perf_event_open` branch/cache/L1/LLC counters when the host exposes the PMU.
 
-Fold the summarized matrix into `current.md` and `docs/RESULTS.md`. Raw scratch
-logs should not become long-lived result entrypoints.
+Fold the summarized matrix into `current.md` and `docs/RESULTS.md`, then run
+`make check-results` from the repository root to catch stale copied summary
+values. Raw scratch logs should not become long-lived result entrypoints.
 
 References:
 

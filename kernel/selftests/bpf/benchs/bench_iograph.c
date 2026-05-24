@@ -39,6 +39,8 @@ static struct iograph_args {
 	u32 drop_action;
 	u32 payload_size;
 	u32 probe_len;
+	u32 entry_id;
+	u32 entry_idx;
 } args = {
 	.selector = IOGRAPH_DEFAULT_SELECTOR,
 	.drop_action = 1,
@@ -52,6 +54,8 @@ enum {
 	ARG_DROP_ACTION,
 	ARG_PAYLOAD_SIZE,
 	ARG_PROBE_LEN,
+	ARG_ENTRY_ID,
+	ARG_ENTRY_IDX,
 };
 
 static const struct argp_option opts[] = {
@@ -63,6 +67,10 @@ static const struct argp_option opts[] = {
 	  "Payload bytes copied by POST payload rows" },
 	{ "probe-len", ARG_PROBE_LEN, "BYTES", 0,
 	  "Selector bytes copied by acquisition rows; 0 means selector length" },
+	{ "entry-id", ARG_ENTRY_ID, "ID", 0,
+	  "io_graph entry id passed to run_action()" },
+	{ "entry-idx", ARG_ENTRY_IDX, "IDX", 0,
+	  "io_graph entry table index passed to run_action_idx()" },
 	{},
 };
 
@@ -103,6 +111,18 @@ static error_t iograph_parse_arg(int key, char *arg, struct argp_state *state)
 		if (!end || *end || code > IOGRAPH_BENCH_SELECTOR_CAP)
 			argp_usage(state);
 		args.probe_len = code;
+		break;
+	case ARG_ENTRY_ID:
+		code = strtoul(arg, &end, 0);
+		if (!end || *end || code > UINT_MAX)
+			argp_usage(state);
+		args.entry_id = code;
+		break;
+	case ARG_ENTRY_IDX:
+		code = strtoul(arg, &end, 0);
+		if (!end || *end || code > UINT_MAX)
+			argp_usage(state);
+		args.entry_idx = code;
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
@@ -329,6 +349,8 @@ static void iograph_setup_common(bool use_lpm, bool decision_only,
 
 	ctx.skel->rodata->selector_len = selector_len;
 	ctx.skel->rodata->probe_len = args.probe_len;
+	ctx.skel->rodata->entry_id = args.entry_id;
+	ctx.skel->rodata->entry_idx = args.entry_idx;
 	ctx.skel->rodata->drop_action = args.drop_action;
 	ctx.skel->rodata->payload_len = args.payload_size;
 	memcpy(ctx.skel->bss->selector, args.selector, selector_len);
@@ -456,6 +478,8 @@ static void iograph_always_post_setup(void)
 
 	ctx.skel->rodata->selector_len = selector_len;
 	ctx.skel->rodata->probe_len = args.probe_len;
+	ctx.skel->rodata->entry_id = args.entry_id;
+	ctx.skel->rodata->entry_idx = args.entry_idx;
 	ctx.skel->rodata->drop_action = args.drop_action;
 	ctx.skel->rodata->payload_len = args.payload_size;
 	memcpy(ctx.skel->bss->selector, args.selector, selector_len);

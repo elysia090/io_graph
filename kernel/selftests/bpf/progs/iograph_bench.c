@@ -48,6 +48,8 @@ struct {
 
 const volatile __u32 selector_len;
 const volatile __u32 probe_len;
+const volatile __u32 entry_id;
+const volatile __u32 entry_idx;
 const volatile __u32 drop_action = 1;
 const volatile __u32 payload_len;
 __u8 selector[IOGRAPH_BENCH_SELECTOR_CAP];
@@ -147,7 +149,7 @@ int iograph_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	action = bpf_iograph_run_action((struct bpf_map *)&policy, selector,
-					len, 0);
+					len, entry_id);
 	return iograph_emit_action(action);
 }
 
@@ -162,7 +164,7 @@ int iograph_payload_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	action = bpf_iograph_run_action((struct bpf_map *)&policy, selector,
-					len, 0);
+					len, entry_id);
 	return iograph_emit_payload_action(action);
 }
 
@@ -192,7 +194,7 @@ int iograph_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	action = bpf_iograph_run_action((struct bpf_map *)&policy, selector,
-					len, 0);
+					len, entry_id);
 	return action != 0;
 }
 
@@ -207,7 +209,7 @@ int iograph_idx_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	action = bpf_iograph_run_action_idx((struct bpf_map *)&policy,
-					    selector, len, 0);
+					    selector, len, entry_idx);
 	return action != 0;
 }
 
@@ -224,7 +226,7 @@ int iograph_acquire_decision_bench_run(struct bpf_raw_tracepoint_args *ctx)
 
 	len = iograph_copy_selector(buf, len);
 	action = bpf_iograph_run_action((struct bpf_map *)&policy, buf,
-					len, 0);
+					len, entry_id);
 	return action != 0;
 }
 
@@ -240,7 +242,7 @@ int iograph_discard_after_reserve_bench_run(struct bpf_raw_tracepoint_args *ctx)
 		return 0;
 
 	action = bpf_iograph_run_action((struct bpf_map *)&policy, selector,
-					len, 0);
+					len, entry_id);
 	if (action == drop_action) {
 		event = bpf_ringbuf_reserve(&events, sizeof(*event), 0);
 		if (!event) {

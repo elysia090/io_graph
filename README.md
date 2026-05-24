@@ -20,6 +20,14 @@ High-fanout compact nodes can use a derived byte dispatch table, and
 `run_action_idx()` gives loader-known entry indexes a direct entry selection
 path.
 
+The prototype evaluates raw selector bytes. It does not canonicalize paths,
+resolve symlinks, or provide a security-enforcement boundary by itself.
+Current patched-kernel rows measure a same-hook 1000-prefix compact hit at
+174.25 ns/op, compact DROP at 172.80 ns/op with 0 emitted ringbuf bytes, and
+bounded-copy LPM hit at 246.37 ns/op. Acquisition rows currently copy bounded
+bytes from a preloaded BPF global; real path/cmdline/argv acquisition remains a
+separate kernel evidence row.
+
 Run:
 
 ```sh

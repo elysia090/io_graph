@@ -1,6 +1,7 @@
 CC ?= cc
+PYTHON ?= python
 
-.PHONY: all bench iogc test clean validate-native
+.PHONY: all bench iogc test clean validate-native check-results
 
 all: bench iogc
 
@@ -12,6 +13,9 @@ iogc:
 
 validate-native:
 	$(MAKE) -C tools/iog_bench validate-native
+
+check-results:
+	$(PYTHON) scripts/check_results_sync.py
 
 test:
 	$(MAKE) -C tests all run

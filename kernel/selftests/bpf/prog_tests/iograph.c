@@ -40,6 +40,7 @@ static void iograph_build_drop_blob(struct iograph_test_blob *blob)
 	}
 	blob->nodes[IOGRAPH_TEST_NODES - 1].edge_start = IOGRAPH_TEST_EDGES;
 	blob->nodes[IOGRAPH_TEST_NODES - 1].accept_id = 1;
+	blob->nodes[IOGRAPH_TEST_NODES - 1].flags = IOG_NODE_F_FINAL_ACTION;
 	blob->entries[0].id = 0;
 	blob->entries[0].state = 0;
 	blob->accepts[0].id = 0;
@@ -54,7 +55,19 @@ void test_iograph(void)
 	struct iograph_test_blob blob;
 	struct iograph_run *skel;
 	__u32 key = 0;
-	int err;
+	int err, fd;
+
+	LIBBPF_OPTS(bpf_map_create_opts, opts,
+		.map_flags = BPF_F_NUMA_NODE,
+		.numa_node = 0,
+	);
+
+	fd = bpf_map_create(BPF_MAP_TYPE_IOGRAPH, "iograph_numa",
+			    sizeof(__u32), sizeof(blob), 1, &opts);
+	if (!ASSERT_LT(fd, 0, "reject_numa_flag")) {
+		close(fd);
+		return;
+	}
 
 	skel = iograph_run__open_and_load();
 	if (!ASSERT_OK_PTR(skel, "open_and_load"))
@@ -77,6 +90,13 @@ void test_iograph(void)
 		goto out;
 
 	iograph_build_drop_blob(&blob);
+	blob.nodes[0].flags = IOG_NODE_F_FINAL_ACTION;
+	err = bpf_map_update_elem(bpf_map__fd(skel->maps.iograph_policy), &key,
+				  &blob, BPF_ANY);
+	if (!ASSERT_NEQ(err, 0, "reject_final_action_without_accept"))
+		goto out;
+
+	iograph_build_drop_blob(&blob);
 	err = bpf_map_update_elem(bpf_map__fd(skel->maps.iograph_policy), &key,
 				  &blob, BPF_ANY);
 	if (!ASSERT_OK(err, "policy_update"))
@@ -96,6 +116,9 @@ void test_iograph(void)
 	ASSERT_OK(result.kfunc_ret, "kfunc_ret");
 	ASSERT_EQ(result.final_state, IOGRAPH_TEST_NODES - 1, "final_state");
 	ASSERT_EQ(result.action_code, IOGRAPH_TEST_DROP, "action_code");
+	ASSERT_EQ(result.run_action_code, IOGRAPH_TEST_DROP, "run_action_code");
+	ASSERT_EQ(result.run_action_idx_code, IOGRAPH_TEST_DROP,
+		  "run_action_idx_code");
 	ASSERT_EQ(result.ringbuf_reserve_seen, 0, "drop_before_reserve");
 
 out:

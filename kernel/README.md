@@ -83,7 +83,8 @@ Current kernel-side v0 coverage:
   `iograph-compact-prefilter` aliases so refreshed kernel results can name the
   current compact `run_action()` runtime explicitly;
 - the selftests bench exposes `iograph-compact-idx-decision` for the direct
-  `run_action_idx()` entry-selection path;
+  `run_action_idx()` entry-selection path; pass `--entry-id` and `--entry-idx`
+  with a multi-entry blob to isolate entry lookup cost;
 - the selftests bench has POST payload rows:
   `iograph-compact-post-payload` runs compact `run_action()` before copying a
   fixed 300 B, 800 B, or 2048 B payload, and
@@ -102,9 +103,11 @@ Current kernel-side v0 coverage:
   graph object for the common prefilter entry path;
 - map memory accounting includes the graph object, retained blob bytes if any,
   and the contiguous compact runtime block;
-- compact arrays currently use normal accounted kernel allocation in the
-  prototype; if `BPF_F_NUMA_NODE` becomes relevant for placement, the compact
-  arrays should be allocated node-aware alongside the graph object;
+- compact runtime memory is capped by `BPF_IOGRAPH_MAX_COMPACT_SIZE`, separate
+  from the uploaded blob cap, because dispatch tables are derived data;
+- `BPF_F_NUMA_NODE` is rejected in v0; if NUMA placement becomes relevant, the
+  copied blob, compact data, and scratch allocations need a consistent
+  node-aware allocation policy;
 - `bpf_iograph_run()` keeps final-state output for validation and debugging;
 - `bpf_iograph_step()` exposes one verified transition;
 - kfunc registration covers the raw tracepoint path used by the low-overhead
