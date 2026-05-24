@@ -44,6 +44,9 @@ Current patched-kernel rows measure a same-hook 1000-prefix compact hit at
 bounded-copy LPM hit at 246.37 ns/op. Acquisition rows currently copy bounded
 bytes from a preloaded BPF global; real path/cmdline/argv acquisition remains a
 separate kernel evidence row.
+A focused 10000-prefix spot check keeps the claim narrow: LPM_TRIE accepted
+the generated policy, but bounded-copy LPM slowed to 263.37 ns/op while compact
+io_graph stayed at 180.90 ns/op on the same hook path.
 
 Run:
 

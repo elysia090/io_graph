@@ -72,6 +72,35 @@ For this string/path-prefix action-policy workload, compact io_graph beats the
 same-hook LPM_TRIE rows that include bounded key materialization. This is not a
 claim that io_graph is generally faster than LPM_TRIE for every prefix map use.
 
+### 10000-Prefix LPM Spot Check
+
+The 10000-prefix row below was run on the same patched `6.18.26.1` WSL kernel
+and the same selftests bench binary, using the generated `typical` dataset and
+the first prefix as the matched selector. It is a focused scaling check, not a
+replacement for the full 100/1000 matrix above.
+
+| prefixes | case | operations_M/s | ns/op | floor_delta_ns |
+|---:|:---|---:|---:|---:|
+| floor | empty same-hook raw tracepoint BPF row | 8.545 +/- 0.041 | 117.03 | 0.00 |
+| 1000 | compact hit | 5.927 +/- 0.065 | 168.72 | 51.69 |
+| 1000 | LPM full-key hit | 3.486 +/- 0.025 | 286.86 | 169.83 |
+| 1000 | LPM bounded-copy hit | 4.201 +/- 0.029 | 238.04 | 121.01 |
+| 10000 | compact hit | 5.528 +/- 0.092 | 180.90 | 63.87 |
+| 10000 | compact acquire+hit | 5.380 +/- 0.057 | 185.87 | 68.84 |
+| 10000 | compact prefilter DROP | 5.526 +/- 0.129 | 180.96 | 63.93 |
+| 10000 | LPM full-key hit | 3.161 +/- 0.056 | 316.36 | 199.33 |
+| 10000 | LPM bounded-copy hit | 3.797 +/- 0.011 | 263.37 | 146.34 |
+| 10000 | LPM bounded acquire+hit | 3.423 +/- 0.027 | 292.14 | 175.11 |
+| 10000 | LPM bounded prefilter DROP | 3.790 +/- 0.025 | 263.85 | 146.82 |
+
+This confirms the expected large-policy direction without overstating it:
+LPM_TRIE accepts the 10000 generated prefix rows, but its same-hook bounded
+decision row slows from 238.04 ns/op at 1000 prefixes to 263.37 ns/op at
+10000 prefixes, while compact io_graph moves from 168.72 ns/op to
+180.90 ns/op. The 10000-prefix compact decision remains 1.46x faster than the
+bounded-copy LPM row, and acquisition widens the gap because LPM still builds a
+lookup key after selector acquisition.
+
 ## Selector Acquisition Rows
 
 These rows copy bounded selector bytes into a stack buffer before lookup. For

@@ -93,6 +93,14 @@ The `n/a` full-key LPM cells were intentionally not run for shared-prefix and
 long-path rows because bounded-copy LPM is the fairer key-materialization
 baseline; full-key copying would only add fixed 256 B scratch-copy work.
 
+The 10000-prefix spot check confirms the large-policy direction without
+claiming that LPM_TRIE cannot hold the policy. LPM accepted 10000 generated
+typical prefix rows, but the same-hook bounded-copy hit row slowed from
+238.04 ns/op at 1000 prefixes to 263.37 ns/op at 10000 prefixes, while compact
+io_graph moved from 168.72 ns/op to 180.90 ns/op. The 10000-prefix compact hit
+row was 1.46x faster than bounded-copy LPM, and the acquire+decision rows were
+185.87 ns/op for compact versus 292.14 ns/op for bounded-copy LPM.
+
 Selector-acquisition rows now copy bounded selector bytes before lookup. For
 the 1000-prefix typical policy, copying 44 B adds 10.29 ns to compact hit rows
 and 28.20 ns to bounded-copy LPM hit rows.
