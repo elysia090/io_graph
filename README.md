@@ -1,6 +1,9 @@
 # io_graph
 
 `io_graph` is a BPF map type prototype for compact verified graph policy data.
+The public rename direction is `BPF_MAP_TYPE_PREFIX_POLICY`; the internal
+prototype symbols and files still use `iograph` while the kernel overlay is
+experimental.
 The userspace proof is complete; active work is the kernel v0 path in
 `kernel/`:
 
@@ -47,7 +50,8 @@ Linux overlay edit/build loop:
 sh scripts/build_linux_overlay_minimal.sh /path/to/linux /path/to/build
 ```
 
-Start with [SPEC.md](SPEC.md), [kernel/README.md](kernel/README.md), and
+Start with [SPEC.md](SPEC.md), [REFERENCE.md](REFERENCE.md),
+[kernel/README.md](kernel/README.md), and
 [docs/RESULTS.md](docs/RESULTS.md). Benchmark methodology is in
 [docs/BENCHMARKING.md](docs/BENCHMARKING.md); source-code precedents and kernel
 design notes are in [docs/DESIGN_NOTES.md](docs/DESIGN_NOTES.md). The frozen
