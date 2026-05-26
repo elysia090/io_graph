@@ -5,6 +5,8 @@ The public rename direction is `BPF_MAP_TYPE_PREFIX_POLICY`; the internal
 prototype symbols and files still use `iograph` while the kernel overlay is
 experimental.
 
+Experimental kernel/BPF prototype. Not an enforcement boundary. Not production-ready.
+
 The motivation is narrower than a generic policy engine and broader than a
 single string helper. Existing downstream selector machinery is not built for
 thousands of string or file-prefix values: Tetragon-style BPF selectors keep
